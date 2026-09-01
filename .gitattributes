@@ -1,0 +1,23 @@
+* text=auto
+
+# Keep source and documentation reviewable as text.
+*.c text
+*.h text
+*.s text
+*.ld text
+*.icf text
+*.cmake text
+CMakeLists.txt text
+*.json text
+*.ioc text
+*.md text
+*.txt text
+*.csv text
+*.gbrjob text
+
+# Binary/reference artifacts.
+*.pdf binary
+*.xlsx binary
+*.gbr binary
+*.drl binary
+

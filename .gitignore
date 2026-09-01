@@ -1,0 +1,46 @@
+# Build outputs
+/build/
+/cmake-build-*/
+*.elf
+*.hex
+*.bin
+*.map
+*.o
+*.obj
+*.d
+*.su
+
+# CMake and Ninja generated state outside the standard build directory
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+.ninja_deps
+.ninja_log
+build.ninja
+
+# STM32CubeMX scratch, backup, and generated reports
+/mx.scratch/
+*.ioc.bak
+*.ioc.old
+*.ioc.tmp
+~*.ioc
+
+# IAR generated state
+EWARM/Debug/
+EWARM/Release/
+EWARM/settings/
+*.dep
+*.ewt
+*.wsdt
+
+# Editor and OS-local files (tracked project settings remain allowed)
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.vscode/*.log
+.vscode/.browse.VC.db*
+
