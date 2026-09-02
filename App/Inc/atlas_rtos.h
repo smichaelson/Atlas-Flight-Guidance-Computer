@@ -28,7 +28,7 @@ extern "C" {
 #define ATLAS_RTOS_COMMAND_PAYLOAD_CAPACITY       (64U)
 #define ATLAS_RTOS_COMMAND_QUEUE_CAPACITY          (8U)
 #define ATLAS_RTOS_RX_STREAM_CAPACITY           (1024U)
-#define ATLAS_RTOS_MAX_STREAM_TX_TIMEOUT_MS       (50U)
+#define ATLAS_RTOS_MAX_STREAM_TX_TIMEOUT_MS       (10U)
 #define ATLAS_RTOS_MAX_QUEUE_WAIT_MS               (5U)
 
 /** @brief Validity bits for fields in AtlasRtosSnapshot. */
@@ -98,7 +98,12 @@ typedef enum
     ATLAS_RTOS_COMMAND_RADIO_ENTER_COMMAND_MODE,
     ATLAS_RTOS_COMMAND_RADIO_EXIT_COMMAND_MODE,
     ATLAS_RTOS_COMMAND_BLE_ENTER_COMMAND_MODE,
-    ATLAS_RTOS_COMMAND_BLE_ENTER_DATA_MODE
+    ATLAS_RTOS_COMMAND_BLE_ENTER_DATA_MODE,
+    ATLAS_RTOS_COMMAND_RADIO_READ_IDENTITY,
+    ATLAS_RTOS_COMMAND_RADIO_READ_SETTINGS,
+    ATLAS_RTOS_COMMAND_RADIO_SET_PARAMETER,
+    ATLAS_RTOS_COMMAND_RADIO_HOST_BAUD,
+    ATLAS_RTOS_COMMAND_BLE_CONFIGURE_SPS
 } AtlasRtosCommandType;
 
 /** @brief Bounded stream payload carried by one queued radio or BLE request. */
@@ -122,8 +127,22 @@ typedef struct
             uint32_t duration_ms;
         } buzzer;
         AtlasRtosStreamCommand stream;
+        struct { uint8_t index; uint32_t value; bool persist; } radio_parameter;
+        uint32_t radio_host_baud;
+        struct { char name[30]; bool persist; } ble_profile;
     } arguments;
 } AtlasRtosCommandRequest;
+
+/** @brief Retained reply to a radio identity/settings query, including failures.
+ * @note Other commands report through CommandCompleted/GetHealth. Queries require
+ *       explicit command mode first; this text is untrusted modem data. */
+typedef struct
+{
+    uint32_t ticket;
+    AtlasRtosCommandType type;
+    AtlasStatus status;
+    char text[ATLAS_RFD900X_RESPONSE_CAPACITY];
+} AtlasRtosMaintenanceReply;
 
 /** @brief Scheduler lifecycle visible to diagnostics and telemetry. */
 typedef enum
@@ -158,6 +177,8 @@ typedef struct
     uint32_t ble_rx_dropped_bytes;
     uint32_t io_deadline_misses;
     uint32_t application_deadline_misses;
+    uint32_t maximum_application_lateness_ticks;
+    uint32_t application_resynchronizations;
     uint32_t sensor_freshness_checks;
     uint32_t sensor_recovery_windows;
     uint32_t stale_sensor_mask;
@@ -213,6 +234,12 @@ AtlasStatus AtlasRtos_SubmitCommand(const AtlasRtosCommandRequest *request,
                                     uint32_t timeout_ms,
                                     uint32_t *ticket);
 
+/** @brief Consume a retained identity/settings reply without blocking.
+ * @param reply Destination. @return true if copied in task context.
+ * @note One consumer must drain this four-entry queue; a queued query waits if
+ *       replies are full. No automatic module/NVM commissioning is performed. */
+bool AtlasRtos_ReadMaintenanceReply(AtlasRtosMaintenanceReply *reply);
+
 /**
  * @brief Read bytes received from the transparent RFD900x flight-link stream.
  * @param destination Destination buffer.
@@ -240,6 +267,13 @@ size_t AtlasRtos_ReadBle(uint8_t *destination,
  * @return true only after successful object creation and scheduler startup.
  */
 bool AtlasRtos_IsRunning(void);
+
+/** @brief Report the conservative output gate (no startup grace or stale samples).
+ * @return true only after fresh sensors, healthy supervision and no maintenance.
+ * @note This is necessary, not sufficient, for PWM/pyro authorization. */
+bool AtlasRtos_OutputsPermitted(void);
+/** @brief Permanently inhibit outputs for this boot, from task or fault context. */
+void AtlasRtos_InhibitOutputs(void);
 
 /**
  * @brief Return a stable diagnostic name for an RTOS fault.

@@ -13,7 +13,6 @@
 
 #include "atlas_time.h"
 
-#include <stdio.h>
 #include <string.h>
 
 #define RFD_GUARD_TIME_MS        (1100U)
@@ -21,6 +20,37 @@
 #define RFD_COMMAND_TIMEOUT_MS   (1000U)
 #define RFD_LINE_CAPACITY        (160U)
 #define RFD_COMMAND_CAPACITY     (40U)
+
+/** @brief Encode unsigned decimal without locale, varargs or allocator code.
+ * @param destination At least 11 bytes (ten digits plus NUL).
+ * @param value Integer. @return Number of digits, excluding NUL. */
+static size_t atlas_rfd_decimal(char *destination, uint32_t value)
+{
+    char reverse[10] = {0};
+    size_t count = 0U, written = 0U;
+    do { reverse[count++] = (char)('0' + value % 10U); value /= 10U; } while (value != 0U);
+    while (count != 0U) destination[written++] = reverse[--count];
+    destination[written] = '\0';
+    return written;
+}
+/** @brief Build the complete bounded S-register write or query line.
+ * @param command Output text. @param capacity Capacity including NUL.
+ * @param index S-register number. @param value Requested value.
+ * @param query True for ATSn?, false for ATSn=value. @return Formatting status. */
+static AtlasStatus atlas_rfd_parameter_line(char *command, size_t capacity,
+    uint8_t index, uint32_t value, bool query)
+{
+    /* Longest line: ATS + 255 + '=' + 4294967295 + NUL = 18 bytes. */
+    char line[18] = "ATS";
+    size_t used = 3U + atlas_rfd_decimal(line + 3U, index);
+    line[used++] = query ? '?' : '=';
+    if (!query) used += atlas_rfd_decimal(line + used, value);
+    line[used] = '\0';
+    if (command == NULL) return ATLAS_ERROR_NULL;
+    if (capacity <= used) return ATLAS_ERROR_OVERFLOW;
+    memcpy(command, line, used + 1U);
+    return ATLAS_OK;
+}
 
 /**
  * @brief Append one response line within caller capacity.
@@ -508,7 +538,7 @@ AtlasStatus AtlasRfd900x_SetParameter(AtlasRfd900x *radio,
                                       uint32_t value,
                                       bool persist)
 {
-    char command[RFD_COMMAND_CAPACITY + 1U];
+    char command[RFD_COMMAND_CAPACITY + 1U] = {0};
     char response[RFD_LINE_CAPACITY];
     uint32_t actual = 0U;
     AtlasStatus status;
@@ -517,17 +547,16 @@ AtlasStatus AtlasRfd900x_SetParameter(AtlasRfd900x *radio,
     {
         return ATLAS_ERROR_NULL;
     }
-    (void)snprintf(command, sizeof(command), "ATS%u=%lu",
-                   (unsigned)index, (unsigned long)value);
-    status = AtlasRfd900x_Command(radio,
+    status = atlas_rfd_parameter_line(command, sizeof(command), index, value, false);
+    if (status == ATLAS_OK) status = AtlasRfd900x_Command(radio,
                                   command,
                                   NULL,
                                   0U,
                                   RFD_COMMAND_TIMEOUT_MS);
     if (status == ATLAS_OK)
     {
-        (void)snprintf(command, sizeof(command), "ATS%u?", (unsigned)index);
-        status = AtlasRfd900x_Command(radio,
+        status = atlas_rfd_parameter_line(command, sizeof(command), index, 0U, true);
+        if (status == ATLAS_OK) status = AtlasRfd900x_Command(radio,
                                       command,
                                       response,
                                       sizeof(response),

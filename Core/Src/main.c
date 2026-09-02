@@ -29,6 +29,8 @@
 /* USER CODE BEGIN Includes */
 #include "atlas_board.h"
 #include "atlas_rtos.h"
+#include "atlas_build.h"
+#include "atlas_bringup.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -197,17 +199,30 @@ int main(void)
       .gnss_uart = &huart1,
       .radio_uart = &huart3,
       .ble_uart = &huart6,
+      .expansion_uart = &huart4,
+      .expansion_i2c = &hi2c2,
       .microsecond_pps_timer = &htim2,
-      .buzzer_timer = &htim15
+      .buzzer_timer = &htim15,
+      .rtc = &hrtc,
+      .io = {
+        .adc_external = &hadc1, .adc_internal = &hadc3,
+        .pwm_1_to_4 = &htim1, .pwm_5_to_8 = &htim3,
+        .pyro_timer = &htim6, .pyro_dma = &hdma_tim6_up
+      }
     };
     atlas_board_startup_status = AtlasBoard_Init(&atlas_board, &hardware);
   }
 
   /* Start the watchdog only after bounded module probes that can take several seconds. */
   MX_IWDG1_Init();
+#if ATLAS_BRINGUP
+  /* Diagnostic tasks reuse the same peripheral owners, but never the flight hook. */
+  atlas_rtos_start_status = AtlasBringup_Start(&atlas_board, &hiwdg1);
+#else
   atlas_rtos_start_status = AtlasRtos_Start(&atlas_board,
                                              &hiwdg1,
                                              atlas_board_startup_status);
+#endif
   /* A healthy scheduler never returns. Preserve the failure for a debugger. */
   (void)atlas_rtos_start_status;
   Error_Handler();
@@ -1802,6 +1817,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  AtlasRtos_InhibitOutputs();
   __disable_irq();
   while (1)
   {

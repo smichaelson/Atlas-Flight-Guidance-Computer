@@ -18,65 +18,47 @@
   */
 /* USER CODE END Header */
 
-/* Define to prevent recursive inclusion -------------------------------------*/
-#ifndef __STM32H7_SD_H
-#define __STM32H7_SD_H
-
-#ifdef __cplusplus
- extern "C" {
-#endif
-
-/* Includes ------------------------------------------------------------------*/
+/**
+ * Atlas polling SD port. Major functions: initialize/deinitialize, read/write,
+ * readiness, geometry and J3/PD3 card detection. No DMA or erase API is exposed.
+ */
+#ifndef ATLAS_BSP_SD_H
+#define ATLAS_BSP_SD_H
 #include "stm32h7xx_hal.h"
-
-/* Exported types --------------------------------------------------------*/
-/**
-  * @brief SD Card information structure
-  */
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define BSP_SD_CardInfo HAL_SD_CardInfoTypeDef
-
-/* Exported constants --------------------------------------------------------*/
-/**
-  * @brief  SD status structure definition
-  */
-#define   MSD_OK                        ((uint8_t)0x00)
-#define   MSD_ERROR                     ((uint8_t)0x01)
-#define   MSD_ERROR_SD_NOT_PRESENT      ((uint8_t)0x02)
-
-/**
-  * @brief  SD transfer state definition
-  */
-#define   SD_TRANSFER_OK                ((uint8_t)0x00)
-#define   SD_TRANSFER_BUSY              ((uint8_t)0x01)
-
-#define SD_PRESENT               ((uint8_t)0x01)
-#define SD_NOT_PRESENT           ((uint8_t)0x00)
-#define SD_DATATIMEOUT           ((uint32_t)100000000)
-
-/* USER CODE BEGIN BSP_H_CODE */
-#define SD_DetectIRQHandler()             HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_8)
-
-/* Exported functions --------------------------------------------------------*/
+#define MSD_OK                 ((uint8_t)0U)
+#define MSD_ERROR              ((uint8_t)1U)
+#define MSD_ERROR_SD_NOT_PRESENT ((uint8_t)2U)
+#define SD_TRANSFER_OK         ((uint8_t)0U)
+#define SD_TRANSFER_BUSY       ((uint8_t)1U)
+#define SD_TRANSFER_ERROR      ((uint8_t)2U)
+#define SD_PRESENT             ((uint8_t)1U)
+#define SD_NOT_PRESENT         ((uint8_t)0U)
+/** @brief Probe/configure optional media. @return MSD status. */
 uint8_t BSP_SD_Init(void);
-uint8_t BSP_SD_ITConfig(void);
-uint8_t BSP_SD_ReadBlocks(uint32_t *pData, uint32_t ReadAddr, uint32_t NumOfBlocks, uint32_t Timeout);
-uint8_t BSP_SD_WriteBlocks(uint32_t *pData, uint32_t WriteAddr, uint32_t NumOfBlocks, uint32_t Timeout);
-uint8_t BSP_SD_ReadBlocks_DMA(uint32_t *pData, uint32_t ReadAddr, uint32_t NumOfBlocks);
-uint8_t BSP_SD_WriteBlocks_DMA(uint32_t *pData, uint32_t WriteAddr, uint32_t NumOfBlocks);
-uint8_t BSP_SD_Erase(uint32_t StartAddr, uint32_t EndAddr);
+/** @brief Reset SDMMC1 and invalidate the handle; storage-owner context only. */
+void BSP_SD_DeInit(void);
+/** @brief Read synchronously. @param data Destination. @param address LBA.
+ * @param count Sectors. @param timeout_ms HAL bound. @return MSD status. */
+uint8_t BSP_SD_ReadBlocks(uint32_t *data, uint32_t address, uint32_t count, uint32_t timeout_ms);
+/** @brief Write synchronously. @param data Source. @param address LBA.
+ * @param count Sectors. @param timeout_ms HAL bound. @return MSD status. */
+uint8_t BSP_SD_WriteBlocks(uint32_t *data, uint32_t address, uint32_t count, uint32_t timeout_ms);
+/** @brief Probe card protocol state. @return SD_TRANSFER_* value. */
 uint8_t BSP_SD_GetCardState(void);
-void    BSP_SD_GetCardInfo(BSP_SD_CardInfo *CardInfo);
+/** @brief Read card geometry. @param info Destination. @return MSD status. */
+uint8_t BSP_SD_GetCardInfo(BSP_SD_CardInfo *info);
+/** @brief Read raw J3 DET (active low); readiness is separate. @return Presence. */
 uint8_t BSP_SD_IsDetected(void);
-
-/* These functions can be modified in case the current settings (e.g. DMA stream)
-   need to be changed for specific application needs */
-void    BSP_SD_AbortCallback(void);
-void    BSP_SD_WriteCpltCallback(void);
-void    BSP_SD_ReadCpltCallback(void);
-/* USER CODE END BSP_H_CODE */
-
+/** @brief Check initialized media generation/presence without sending a command.
+ * @return One only while the mounted card session remains current. */
+uint8_t BSP_SD_IsMediaCurrent(void);
+/** @brief Record either PD3 detect edge; ISR-only, no HAL/RTOS calls. */
+void BSP_SD_DetectFromISR(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* __STM32H7_SD_H */
+#endif

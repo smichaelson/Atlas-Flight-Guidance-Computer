@@ -24,7 +24,7 @@
 #include "usbd_conf.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "atlas_build.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -73,7 +73,10 @@
 #define USB_SIZ_BOS_DESC            0x0C
 
 /* USER CODE BEGIN PRIVATE_DEFINES */
-
+#if ATLAS_BRINGUP
+#undef USBD_PRODUCT_STRING_FS
+#define USBD_PRODUCT_STRING_FS "Atlas PCB Bringup"
+#endif
 /* USER CODE END PRIVATE_DEFINES */
 
 /**

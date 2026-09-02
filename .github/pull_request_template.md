@@ -18,6 +18,7 @@ Describe the problem, the chosen solution, and why this change belongs now.
 - [ ] Compiler warnings reviewed
 - [ ] Linker map reviewed where memory placement changed
 - [ ] Automated tests added or updated
+- [ ] Host suite, repository checker, and review acceptance probes run; failures disclosed rather than relabeled as passes
 - [ ] Bench test procedure and results attached
 - [ ] Reset, timeout, and fault paths exercised where applicable
 - [ ] RTOS ownership, task priorities, interrupt/API rules, queue/stream bounds, heartbeats, and stack margins reviewed where applicable
@@ -35,7 +36,9 @@ List exact tool versions, hardware revision, setup, expected result, observed re
 
 ## Documentation and repository hygiene
 
-- [ ] `docs/PROJECT_STATUS.md` updated if capability or blockers changed
+- [ ] [System readiness](../docs/SYSTEMS.md) and [current findings](../docs/REVIEW_REPORT.md) updated if capability, blockers, or evidence changed
+- [ ] [Development standards](../docs/DEVELOPMENT.md) followed; device/RTOS details kept at their canonical reference
+- [ ] Local documentation links and heading anchors checked
 - [ ] Hardware/revision documentation updated if needed
 - [ ] No build outputs, credentials, private keys, personal absolute paths, or unrelated binaries added
 - [ ] New dependencies retain their license and notice files

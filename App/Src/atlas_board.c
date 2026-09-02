@@ -3,7 +3,8 @@
  * @brief Complete Atlas module bring-up, default volatile configuration, and ISR dispatch.
  *
  * Major functions:
- * - AtlasBoard_Init(): attempts all modules and preserves a per-device bring-up report.
+ * - AtlasBoard_Init(): prepares the board; normal builds also probe every module.
+ * - AtlasBoard_ProbeModule(): single-owner, once-per-boot staged diagnostic startup.
  * - AtlasBoard_Service(): keeps UART/BNO protocols and buzzer scheduling responsive.
  * - AtlasBoard_LatchRuntimeFault(): latches task-level runtime failures for supervision.
  * - AtlasBoard_GetBno085Sample(): provides typed, latest-value access to fused reports.
@@ -11,6 +12,9 @@
  */
 
 #include "atlas_board.h"
+#include "atlas_build.h"
+#include "atlas_usb.h"
+#include "bsp_driver_sd.h"
 
 #include <string.h>
 
@@ -80,14 +84,14 @@ static AtlasStatus atlas_board_enable_bno_reports(AtlasBoard *board)
 }
 
 /**
- * @brief Initialize every supported sensor/module and retain every individual result.
+ * @brief Prepare indicators and reports; normal builds also probe all sensor/modules.
  * @param board Destination board instance.
  * @param hardware Initialized HAL handles matching the schematic.
  * @return ATLAS_OK when every required check passes, otherwise the first failure.
+ * @note Bring-up builds leave module statuses NOT_READY for explicit staged probes.
  */
 AtlasStatus AtlasBoard_Init(AtlasBoard *board, const AtlasBoardHardware *hardware)
 {
-    AtlasLsm6dsv16bConfig imu_config;
     AtlasStatus overall = ATLAS_OK;
 
     if ((board == NULL) || (hardware == NULL) ||
@@ -104,7 +108,12 @@ AtlasStatus AtlasBoard_Init(AtlasBoard *board, const AtlasBoardHardware *hardwar
     }
 
     memset(board, 0, sizeof(*board));
+    board->hardware = *hardware;
     atlas_active_board = board;
+    board->init.adxl375 = board->init.lsm6dsv16b = board->init.mmc5983ma =
+        board->init.ms5611 = board->init.bno085 = board->init.bno085_default_reports =
+        board->init.gnss = board->init.gnss_ram_configuration =
+        board->init.radio_transport = board->init.ble = ATLAS_ERROR_NOT_READY;
 
     board->init.led = AtlasLed_Init(&board->led);
     overall = atlas_board_accumulate(overall, board->init.led);
@@ -116,69 +125,16 @@ AtlasStatus AtlasBoard_Init(AtlasBoard *board, const AtlasBoardHardware *hardwar
     board->init.buzzer = AtlasBuzzer_Init(&board->buzzer,
                                            hardware->buzzer_timer);
     overall = atlas_board_accumulate(overall, board->init.buzzer);
-
-    board->init.adxl375 = AtlasAdxl375_Init(&board->adxl375,
-                                            hardware->shared_sensor_spi,
-                                            CS_ADXL375_GPIO_Port,
-                                            CS_ADXL375_Pin,
-                                            ATLAS_ADXL375_ODR_400_HZ);
-    overall = atlas_board_accumulate(overall, board->init.adxl375);
-
-    imu_config = AtlasLsm6dsv16b_DefaultConfig();
-    board->init.lsm6dsv16b = AtlasLsm6dsv16b_Init(&board->lsm6dsv16b,
-                                                   hardware->imu_spi,
-                                                   CS_LSM6DSV16B_GPIO_Port,
-                                                   CS_LSM6DSV16B_Pin,
-                                                   &imu_config);
-    overall = atlas_board_accumulate(overall, board->init.lsm6dsv16b);
-
-    board->init.mmc5983ma = AtlasMmc5983ma_Init(&board->mmc5983ma,
-                                                hardware->shared_sensor_spi,
-                                                CS_MMC5983_GPIO_Port,
-                                                CS_MMC5983_Pin,
-                                                ATLAS_MMC5983_BW_200_HZ_4_MS);
-    overall = atlas_board_accumulate(overall, board->init.mmc5983ma);
-
-    board->init.ms5611 = AtlasMs5611_Init(&board->ms5611,
-                                          hardware->sensor_i2c);
-    overall = atlas_board_accumulate(overall, board->init.ms5611);
-
-    board->init.bno085 = AtlasBno085_Init(&board->bno085,
-                                          hardware->sensor_i2c,
-                                          hardware->microsecond_pps_timer,
-                                          atlas_board_bno085_sample,
-                                          board);
-    overall = atlas_board_accumulate(overall, board->init.bno085);
-    board->init.bno085_default_reports = (board->init.bno085 == ATLAS_OK) ?
-                                          atlas_board_enable_bno_reports(board) :
-                                          ATLAS_ERROR_NOT_READY;
-    overall = atlas_board_accumulate(overall,
-                                     board->init.bno085_default_reports);
-
-    board->init.gnss = AtlasGnss_Init(&board->gnss,
-                                      &board->gnss_transport,
-                                      hardware->gnss_uart,
-                                      hardware->microsecond_pps_timer);
-    overall = atlas_board_accumulate(overall, board->init.gnss);
-    board->init.gnss_ram_configuration = (board->init.gnss == ATLAS_OK) ?
-        AtlasGnss_ConfigureRam(&board->gnss, 100U, true) :
-        ATLAS_ERROR_NOT_READY;
-    overall = atlas_board_accumulate(overall,
-                                     board->init.gnss_ram_configuration);
-
-    /* Radio init is intentionally transport-only: no +++, AT command, or NVM write. */
-    board->init.radio_transport = AtlasRfd900x_Init(&board->radio,
-                                                    &board->radio_transport,
-                                                    hardware->radio_uart);
-    overall = atlas_board_accumulate(overall, board->init.radio_transport);
-
-    /* BLE identity probing is read-only; persistent SPS setup remains an explicit API. */
-    board->init.ble = AtlasBle_Init(&board->ble,
-                                    &board->ble_transport,
-                                    hardware->ble_uart);
-    overall = atlas_board_accumulate(overall, board->init.ble);
-
     board->init_complete = true;
+#if !ATLAS_BRINGUP
+    /* The ordinary image retains eager startup. Bench probes run only on request,
+     * AFTER USB/ADC tasks are available, so absent modules cannot hide diagnostics. */
+    static const AtlasBoardModule order[] = {ATLAS_BOARD_ADXL, ATLAS_BOARD_LSM,
+        ATLAS_BOARD_MMC, ATLAS_BOARD_BARO, ATLAS_BOARD_BNO, ATLAS_BOARD_GNSS,
+        ATLAS_BOARD_RADIO, ATLAS_BOARD_BLE};
+    for (size_t i = 0U; i < sizeof(order) / sizeof(order[0]); ++i)
+        overall = atlas_board_accumulate(overall, AtlasBoard_ProbeModule(board, order[i]));
+#endif
     if (board->led.initialized)
     {
         (void)AtlasLed_SetColor(&board->led,
@@ -186,6 +142,62 @@ AtlasStatus AtlasBoard_Init(AtlasBoard *board, const AtlasBoardHardware *hardwar
                                 ATLAS_LED_GREEN : ATLAS_LED_YELLOW);
     }
     return overall;
+}
+
+/** @brief Probe one subsystem without retrying partially initialized drivers.
+ * @param board Prepared board, exclusively owned by caller. @param module Subsystem.
+ * @return Retained startup outcome; repeats are rejected until a fresh MCU boot. */
+AtlasStatus AtlasBoard_ProbeModule(AtlasBoard *board, AtlasBoardModule module)
+{
+    if (board == NULL) return ATLAS_ERROR_NULL;
+    if (!board->init_complete) return ATLAS_ERROR_NOT_READY;
+    if ((unsigned)module >= ATLAS_BOARD_MODULE_COUNT) return ATLAS_ERROR_ARGUMENT;
+    const uint32_t bit = 1UL << (unsigned)module;
+    if ((board->attempted_modules & bit) != 0U) return ATLAS_ERROR_STATE;
+    board->attempted_modules |= bit; /* Failure is an attempt too; no hidden retry. */
+    const AtlasBoardHardware *hardware = &board->hardware;
+    switch (module)
+    {
+        case ATLAS_BOARD_ADXL:
+            board->init.adxl375 = AtlasAdxl375_Init(&board->adxl375, hardware->shared_sensor_spi,
+                CS_ADXL375_GPIO_Port, CS_ADXL375_Pin, ATLAS_ADXL375_ODR_400_HZ);
+            return board->init.adxl375;
+        case ATLAS_BOARD_LSM:
+        {
+            const AtlasLsm6dsv16bConfig config = AtlasLsm6dsv16b_DefaultConfig();
+            board->init.lsm6dsv16b = AtlasLsm6dsv16b_Init(&board->lsm6dsv16b, hardware->imu_spi,
+                CS_LSM6DSV16B_GPIO_Port, CS_LSM6DSV16B_Pin, &config);
+            return board->init.lsm6dsv16b;
+        }
+        case ATLAS_BOARD_MMC:
+            board->init.mmc5983ma = AtlasMmc5983ma_Init(&board->mmc5983ma, hardware->shared_sensor_spi,
+                CS_MMC5983_GPIO_Port, CS_MMC5983_Pin, ATLAS_MMC5983_BW_200_HZ_4_MS);
+            return board->init.mmc5983ma;
+        case ATLAS_BOARD_BARO:
+            board->init.ms5611 = AtlasMs5611_Init(&board->ms5611, hardware->sensor_i2c);
+            return board->init.ms5611;
+        case ATLAS_BOARD_BNO:
+            board->init.bno085 = AtlasBno085_Init(&board->bno085, hardware->sensor_i2c,
+                hardware->microsecond_pps_timer, atlas_board_bno085_sample, board);
+            board->init.bno085_default_reports = board->init.bno085 == ATLAS_OK ?
+                atlas_board_enable_bno_reports(board) : ATLAS_ERROR_NOT_READY;
+            return atlas_board_accumulate(board->init.bno085, board->init.bno085_default_reports);
+        case ATLAS_BOARD_GNSS:
+            board->init.gnss = AtlasGnss_Init(&board->gnss, &board->gnss_transport,
+                hardware->gnss_uart, hardware->microsecond_pps_timer);
+            board->init.gnss_ram_configuration = board->init.gnss == ATLAS_OK ?
+                AtlasGnss_ConfigureRam(&board->gnss, 100U, true) : ATLAS_ERROR_NOT_READY;
+            return atlas_board_accumulate(board->init.gnss, board->init.gnss_ram_configuration);
+        case ATLAS_BOARD_BLE:
+            board->init.ble = AtlasBle_Init(&board->ble, &board->ble_transport, hardware->ble_uart);
+            return board->init.ble;
+        case ATLAS_BOARD_RADIO:
+            /* Opening a UART is not proof that an external modem is connected. */
+            board->init.radio_transport = AtlasRfd900x_Init(&board->radio, &board->radio_transport,
+                hardware->radio_uart);
+            return board->init.radio_transport;
+        default: return ATLAS_ERROR_ARGUMENT;
+    }
 }
 
 /**
@@ -206,7 +218,7 @@ AtlasStatus AtlasBoard_Service(AtlasBoard *board)
     {
         return ATLAS_ERROR_NOT_READY;
     }
-    if (board->runtime_fault != ATLAS_OK)
+    if (!ATLAS_BRINGUP && board->runtime_fault != ATLAS_OK)
     {
         AtlasBuzzer_Service(&board->buzzer);
         return board->runtime_fault;
@@ -313,6 +325,8 @@ bool AtlasBoard_GetBno085Sample(AtlasBoard *board,
  */
 void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin)
 {
+    if (gpio_pin == USB_VBUS_Pin) { AtlasUsb_OnVbusEdge(); return; }
+    if (gpio_pin == SD_DET_Pin) { BSP_SD_DetectFromISR(); return; }
     if (atlas_active_board == NULL)
     {
         return;

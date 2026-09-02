@@ -24,7 +24,18 @@ bool AtlasRtosPolicy_PeriodDue(uint32_t now_ms,
                                uint32_t period_ms)
 {
     return (period_ms != 0U) &&
+           (period_ms < UINT32_C(0x80000000)) &&
            ((uint32_t)(now_ms - previous_ms) >= period_ms);
+}
+
+/** @brief Include dispatch lateness in response-time acceptance.
+ * @param now_ticks Current tick. @param release_ticks Scheduled tick.
+ * @param deadline_ticks Valid relative deadline. @return Deadline failure. */
+bool AtlasRtosPolicy_ResponseLate(uint32_t now_ticks, uint32_t release_ticks,
+                                 uint32_t deadline_ticks)
+{
+    return deadline_ticks == 0U || deadline_ticks >= UINT32_C(0x80000000) ||
+           (uint32_t)(now_ticks - release_ticks) >= deadline_ticks;
 }
 
 /**

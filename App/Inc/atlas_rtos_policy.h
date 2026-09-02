@@ -36,7 +36,8 @@ typedef enum
     ATLAS_RTOS_FAULT_WATCHDOG,
     ATLAS_RTOS_FAULT_ASSERT,
     ATLAS_RTOS_FAULT_STACK_OVERFLOW,
-    ATLAS_RTOS_FAULT_SCHEDULER
+    ATLAS_RTOS_FAULT_SCHEDULER,
+    ATLAS_RTOS_FAULT_OUTPUT_SERVICE
 } AtlasRtosFault;
 
 /** @brief Inputs needed for one deterministic supervisor decision. */
@@ -70,6 +71,14 @@ typedef struct
 bool AtlasRtosPolicy_PeriodDue(uint32_t now_ms,
                                uint32_t previous_ms,
                                uint32_t period_ms);
+
+/** @brief Check a complete response deadline relative to the SCHEDULED release.
+ * @param now_ticks Current 32-bit kernel tick. @param release_ticks Scheduled release.
+ * @param deadline_ticks Nonzero interval below half the counter range.
+ * @return true at/after the deadline, or for an invalid interval.
+ * @note Caller must not supply a release in the future; subtraction handles wrap. */
+bool AtlasRtosPolicy_ResponseLate(uint32_t now_ticks, uint32_t release_ticks,
+                                 uint32_t deadline_ticks);
 
 /**
  * @brief Check a timestamp against a wrap-safe maximum age.

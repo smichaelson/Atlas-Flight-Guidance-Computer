@@ -14,7 +14,6 @@
 
 #include "atlas_time.h"
 
-#include <stdio.h>
 #include <string.h>
 
 #define BLE_RESET_ASSERT_MS  (20U)
@@ -89,7 +88,9 @@ static bool atlas_ble_valid_name(const char *name)
     {
         return false;
     }
-    length = strlen(name);
+    /* Bound the read before looking for a terminator; runtime names are copied
+     * into a fixed 30-byte command field. No unbounded scan is needed here. */
+    for (length = 0U; length <= BLE_MAX_NAME_LENGTH && name[length] != '\0'; ++length) { }
     if ((length == 0U) || (length > BLE_MAX_NAME_LENGTH))
     {
         return false;
@@ -104,6 +105,25 @@ static bool atlas_ble_valid_name(const char *name)
         }
     }
     return true;
+}
+
+/** @brief Construct a validated name-bearing AT line without libc formatting/heap.
+ * @param destination Output text. @param capacity Output capacity including NUL.
+ * @param prefix Trusted literal prefix. @param name Validated BLE name.
+ * @param suffix Trusted literal suffix. @return Complete line or typed failure. */
+static AtlasStatus atlas_ble_name_line(char *destination, size_t capacity,
+    const char *prefix, const char *name, const char *suffix)
+{
+    if (destination == NULL || prefix == NULL || name == NULL || suffix == NULL)
+        return ATLAS_ERROR_NULL;
+    if (!atlas_ble_valid_name(name)) return ATLAS_ERROR_ARGUMENT;
+    const size_t prefix_length = strlen(prefix), name_length = strlen(name), suffix_length = strlen(suffix);
+    if (prefix_length >= capacity || name_length >= capacity - prefix_length ||
+        suffix_length >= capacity - prefix_length - name_length) return ATLAS_ERROR_OVERFLOW;
+    memcpy(destination, prefix, prefix_length);
+    memcpy(destination + prefix_length, name, name_length);
+    memcpy(destination + prefix_length + name_length, suffix, suffix_length + 1U);
+    return ATLAS_OK;
 }
 
 /**
@@ -151,9 +171,10 @@ static AtlasStatus atlas_ble_verify_sps_profile(AtlasBle *ble,
 
     status = AtlasBle_Command(ble, "AT+UBTLN?", response, sizeof(response),
                               BLE_COMMAND_TIMEOUT_MS);
-    (void)snprintf(expected, sizeof(expected), "+UBTLN:%s", device_name);
-    (void)snprintf(expected_quoted, sizeof(expected_quoted),
-                   "+UBTLN:\"%s\"", device_name);
+    if (status == ATLAS_OK)
+        status = atlas_ble_name_line(expected, sizeof(expected), "+UBTLN:", device_name, "");
+    if (status == ATLAS_OK)
+        status = atlas_ble_name_line(expected_quoted, sizeof(expected_quoted), "+UBTLN:\"", device_name, "\"");
     if ((status == ATLAS_OK) &&
         !atlas_ble_response_has_line(response, expected) &&
         !atlas_ble_response_has_line(response, expected_quoted))
@@ -524,8 +545,9 @@ AtlasStatus AtlasBle_ConfigureSps(AtlasBle *ble,
         return ATLAS_ERROR_ARGUMENT;
     }
 
-    (void)snprintf(command, sizeof(command), "AT+UBTLN=\"%s\"", device_name);
-    status = AtlasBle_Command(ble, command, NULL, 0U, BLE_COMMAND_TIMEOUT_MS);
+    status = atlas_ble_name_line(command, sizeof(command), "AT+UBTLN=\"", device_name, "\"");
+    if (status == ATLAS_OK)
+        status = AtlasBle_Command(ble, command, NULL, 0U, BLE_COMMAND_TIMEOUT_MS);
     if (status == ATLAS_OK)
     {
         status = AtlasBle_Command(ble, "AT+UBTLE=2", NULL, 0U,

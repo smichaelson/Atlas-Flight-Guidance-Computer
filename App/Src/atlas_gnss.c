@@ -32,6 +32,8 @@
 #define UBX_MON_VER_MIN_LENGTH          (40U)
 #define UBX_FRAME_OVERHEAD              (8U)
 #define UBX_DEFAULT_TIMEOUT_MS          (1000U)
+#define UBX_INTERBYTE_TIMEOUT_MS         (250U)
+#define UBX_FRAME_TIMEOUT_MS            (2000U)
 
 #define UBX_CFG_LAYER_RAM               (0x01U)
 #define UBX_KEY_RATE_MEAS               (0x30210001UL)
@@ -278,6 +280,42 @@ static void atlas_gnss_resync(AtlasGnss *gnss, uint8_t last_byte)
                          ATLAS_GNSS_PARSE_SYNC2 : ATLAS_GNSS_PARSE_SYNC1;
     gnss->payload_index = 0U;
     gnss->discard_remaining = 0U;
+    gnss->frame_started_ms = HAL_GetTick();
+    gnss->last_byte_ms = gnss->frame_started_ms;
+}
+
+/**
+ * @brief Abandon a frame whose stream continuity or bounded age was lost.
+ * @param gnss Parser with an initialized transport.
+ * @param now_ms Current monotonic service time.
+ * @return true when unlocatable UART loss required flushing the receive ring.
+ * @note UART bytes have no per-byte timestamps. Long service gaps deliberately
+ *       invalidate a partial frame; a new complete frame must re-establish sync.
+ */
+static bool atlas_gnss_check_continuity(AtlasGnss *gnss, uint32_t now_ms)
+{
+    const uint32_t dropped = gnss->transport->health.dropped_bytes;
+    const uint32_t restarts = gnss->transport->health.receive_restarts;
+    if ((dropped != gnss->observed_dropped_bytes) ||
+        (restarts != gnss->observed_receive_restarts))
+    {
+        gnss->observed_dropped_bytes = dropped;
+        gnss->observed_receive_restarts = restarts;
+        ++gnss->health.transport_resynchronizations;
+        atlas_gnss_resync(gnss, 0U);
+        /* We cannot locate the missing bytes within this queue. Do not combine
+         * a pre-loss prefix with a post-loss suffix and publish a spliced frame. */
+        AtlasUartTransport_FlushRx(gnss->transport);
+        return true;
+    }
+    if ((gnss->parser_state != ATLAS_GNSS_PARSE_SYNC1) &&
+        (((uint32_t)(now_ms - gnss->last_byte_ms) >= UBX_INTERBYTE_TIMEOUT_MS) ||
+         ((uint32_t)(now_ms - gnss->frame_started_ms) >= UBX_FRAME_TIMEOUT_MS)))
+    {
+        ++gnss->health.frame_timeouts;
+        atlas_gnss_resync(gnss, 0U);
+    }
+    return false;
 }
 
 /**
@@ -294,6 +332,7 @@ static void atlas_gnss_parse_byte(AtlasGnss *gnss, uint8_t value)
         case ATLAS_GNSS_PARSE_SYNC1:
             if (value == UBX_SYNC_1)
             {
+                gnss->frame_started_ms = HAL_GetTick();
                 gnss->parser_state = ATLAS_GNSS_PARSE_SYNC2;
             }
             break;
@@ -336,9 +375,10 @@ static void atlas_gnss_parse_byte(AtlasGnss *gnss, uint8_t value)
             if (gnss->payload_length > ATLAS_GNSS_MAX_UBX_PAYLOAD)
             {
                 ++gnss->health.oversize_frames;
-                /* Include payload plus two checksum bytes before scanning again. */
-                gnss->discard_remaining = (uint32_t)gnss->payload_length + 2U;
-                gnss->parser_state = ATLAS_GNSS_PARSE_DISCARD;
+                /* A corrupt length is not a trustworthy discard budget. Resume
+                 * bounded sync scanning immediately; never wait for 65535 bytes.
+                 * A candidate still needs a valid checksum and supported shape. */
+                atlas_gnss_resync(gnss, value);
             }
             else
             {
@@ -653,9 +693,10 @@ AtlasStatus AtlasGnss_Init(AtlasGnss *gnss,
     {
         return status;
     }
-    if (HAL_TIM_Base_Start(pps_timer) != HAL_OK)
+    status = AtlasTime_StartCounter(pps_timer);
+    if (status != ATLAS_OK)
     {
-        return ATLAS_ERROR_IO;
+        return status;
     }
     if (HAL_TIM_IC_Start_IT(pps_timer, TIM_CHANNEL_1) != HAL_OK)
     {
@@ -720,10 +761,16 @@ AtlasStatus AtlasGnss_Service(AtlasGnss *gnss, size_t byte_budget)
     {
         byte_budget = 512U;
     }
+    (void)atlas_gnss_check_continuity(gnss, HAL_GetTick());
     while ((consumed < byte_budget) &&
            AtlasUartTransport_ReadByte(gnss->transport, &value))
     {
+        if (atlas_gnss_check_continuity(gnss, HAL_GetTick()))
+        {
+            break; /* A loss observed during this bounded drain invalidates it. */
+        }
         atlas_gnss_parse_byte(gnss, value);
+        gnss->last_byte_ms = HAL_GetTick();
         ++consumed;
     }
     return ATLAS_OK;

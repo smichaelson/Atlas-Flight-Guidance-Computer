@@ -1,0 +1,2 @@
+# Serial transport only; Tk and the rest of the dashboard use the Python standard library.
+pyserial==3.5

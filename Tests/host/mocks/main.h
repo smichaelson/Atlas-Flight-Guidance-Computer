@@ -63,10 +63,19 @@ typedef struct
     uint32_t Prescaler;
 } TIM_Base_InitTypeDef;
 
+typedef struct { uint32_t CR1; } TIM_TypeDef;
+typedef enum
+{
+    HAL_TIM_STATE_RESET = 0U,
+    HAL_TIM_STATE_READY = 1U,
+    HAL_TIM_STATE_BUSY = 2U
+} HAL_TIM_StateTypeDef;
+
 typedef struct
 {
-    void *Instance;
+    TIM_TypeDef *Instance;
     TIM_Base_InitTypeDef Init;
+    HAL_TIM_StateTypeDef State;
     uint32_t Channel;
     uint32_t counter;
     uint32_t capture;
@@ -89,7 +98,7 @@ typedef struct
     uint32_t OCNIdleState;
 } TIM_OC_InitTypeDef;
 
-extern uint32_t atlas_test_tim15_instance;
+extern TIM_TypeDef atlas_test_tim15_instance;
 
 /** @brief Optional callback invoked by the host UART transmit stub. */
 typedef void (*AtlasTestUartTransmitHook)(UART_HandleTypeDef *uart,
@@ -118,6 +127,7 @@ typedef HAL_StatusTypeDef (*AtlasTestI2cReceiveHook)(I2C_HandleTypeDef *i2c,
                                                      uint32_t timeout_ms);
 
 #define TIM_CHANNEL_1               (1U)
+#define TIM_CR1_CEN                 (1U)
 #define TIM_CHANNEL_2               (2U)
 #define HAL_TIM_ACTIVE_CHANNEL_1    (1U)
 #define TIM15                       (&atlas_test_tim15_instance)

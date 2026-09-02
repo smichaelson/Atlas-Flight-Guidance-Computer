@@ -76,6 +76,8 @@
 
 /** USB Device initialization function. */
 void MX_USB_DEVICE_Init(void);
+/** @brief Prepare disconnected CDC. @return USB status; owner gates connection separately. */
+uint8_t AtlasUsbDevice_Init(void);
 
 /*
  * -- Insert functions declaration here --

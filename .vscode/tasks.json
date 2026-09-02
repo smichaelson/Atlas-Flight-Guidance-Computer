@@ -1,0 +1,23 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Atlas: configure inhibited bring-up",
+            "type": "process",
+            "command": "${config:cmake.cmakePath}",
+            "args": ["--preset", "Bringup"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "Atlas: build inhibited bring-up",
+            "type": "process",
+            "command": "${config:cmake.cmakePath}",
+            "args": ["--build", "--preset", "Bringup", "--parallel", "4"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "dependsOn": "Atlas: configure inhibited bring-up",
+            "problemMatcher": "$gcc",
+            "group": {"kind": "build", "isDefault": true}
+        }
+    ]
+}

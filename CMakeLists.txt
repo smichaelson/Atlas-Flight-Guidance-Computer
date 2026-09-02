@@ -23,6 +23,7 @@ set(CMAKE_PROJECT_NAME Atlas)
 
 # Enable compile command to ease indexing with e.g. clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
+option(ATLAS_BRINGUP "Build the non-actuating PCB diagnostic application" OFF)
 
 # Core project settings
 project(${CMAKE_PROJECT_NAME})
@@ -45,22 +46,30 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/atlas_adxl375.c
+    App/Src/atlas_analog.c
     App/Src/atlas_ble.c
     App/Src/atlas_bno085.c
     App/Src/atlas_board.c
+    App/Src/atlas_bringup.c
+    App/Src/atlas_bringup_protocol.c
     App/Src/atlas_buzzer.c
     App/Src/atlas_gnss.c
+    App/Src/atlas_expansion.c
+    App/Src/atlas_io.c
     App/Src/atlas_led.c
     App/Src/atlas_lsm6dsv16b.c
     App/Src/atlas_mmc5983ma.c
     App/Src/atlas_ms5611.c
+    App/Src/atlas_pyro_policy.c
     App/Src/atlas_rfd900x.c
     App/Src/atlas_rtos.c
     App/Src/atlas_rtos_policy.c
     App/Src/atlas_spi_device.c
     App/Src/atlas_status.c
+    App/Src/atlas_storage.c
     App/Src/atlas_time.c
     App/Src/atlas_uart_transport.c
+    App/Src/atlas_usb.c
     ThirdParty/CEVA/sh2/sh2.c
     ThirdParty/CEVA/sh2/sh2_SensorValue.c
     ThirdParty/CEVA/sh2/sh2_util.c
@@ -83,6 +92,28 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     ATLAS_USE_FREERTOS=1
+    ATLAS_BRINGUP=$<BOOL:${ATLAS_BRINGUP}>
+)
+
+if(ATLAS_BRINGUP)
+    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "Atlas-Bringup")
+    set(ATLAS_PROFILE_NAME "bringup")
+else()
+    set(ATLAS_PROFILE_NAME "normal")
+endif()
+
+# Program the generated HEX (embedded addresses) or BIN at 0x08000000, never the .ioc.
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/$<TARGET_FILE_BASE_NAME:${CMAKE_PROJECT_NAME}>.hex
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+        $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/$<TARGET_FILE_BASE_NAME:${CMAKE_PROJECT_NAME}>.bin
+    COMMAND ${CMAKE_COMMAND}
+        -DIMAGE=$<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+        -DPROFILE=${ATLAS_PROFILE_NAME}
+        -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -P ${CMAKE_SOURCE_DIR}/cmake/stamp_firmware.cmake
+    VERBATIM
 )
 
 # Remove wrong libob.a library dependency when using cpp files

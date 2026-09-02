@@ -22,6 +22,8 @@
 #include "stm32h7xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "atlas_rtos.h"
+#include "atlas_io.h"
 #if defined(ATLAS_USE_FREERTOS)
 #include "FreeRTOS.h"
 #include "task.h"
@@ -75,7 +77,7 @@ extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart3;
 extern UART_HandleTypeDef huart6;
 /* USER CODE BEGIN EV */
-
+extern ADC_HandleTypeDef hadc1;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -87,7 +89,7 @@ extern UART_HandleTypeDef huart6;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-
+  AtlasRtos_InhibitOutputs();
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
    while (1)
@@ -102,7 +104,7 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  AtlasRtos_InhibitOutputs();
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -117,7 +119,7 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  AtlasRtos_InhibitOutputs();
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -132,7 +134,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  AtlasRtos_InhibitOutputs();
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -147,7 +149,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  AtlasRtos_InhibitOutputs();
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
@@ -484,7 +486,7 @@ void OTG_FS_IRQHandler(void)
 void ECC_IRQHandler(void)
 {
   /* USER CODE BEGIN ECC_IRQn 0 */
-
+  AtlasIo_HandleDtcm0Irq();
   /* USER CODE END ECC_IRQn 0 */
   HAL_RAMECC_IRQHandler(&hramecc1_m1);
   HAL_RAMECC_IRQHandler(&hramecc1_m4);
@@ -496,5 +498,9 @@ void ECC_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-
+/** @brief Handle ADC1 overrun errors; the callback inhibits outputs without RTOS calls. */
+void ADC_IRQHandler(void)
+{
+  HAL_ADC_IRQHandler(&hadc1);
+}
 /* USER CODE END 1 */

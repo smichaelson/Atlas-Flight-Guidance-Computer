@@ -319,6 +319,7 @@ AtlasStatus AtlasBno085_Init(AtlasBno085 *sensor,
                              void *sample_context)
 {
     int sh2_status;
+    AtlasStatus clock_status;
 
     if ((sensor == NULL) || (i2c == NULL) || (microsecond_timer == NULL))
     {
@@ -341,9 +342,10 @@ AtlasStatus AtlasBno085_Init(AtlasBno085 *sensor,
     sensor->hal.write = atlas_bno085_hal_write;
     sensor->hal.getTimeUs = atlas_bno085_hal_time_us;
 
-    if (HAL_TIM_Base_Start(microsecond_timer) != HAL_OK)
+    clock_status = AtlasTime_StartCounter(microsecond_timer);
+    if (clock_status != ATLAS_OK)
     {
-        return ATLAS_ERROR_IO;
+        return clock_status;
     }
     sh2_status = sh2_open(&sensor->hal, atlas_bno085_async_callback, sensor);
     if (sh2_status != SH2_OK)

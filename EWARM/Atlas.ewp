@@ -1114,12 +1114,20 @@
         <file><name>$PROJ_DIR$/../App/Src/atlas_lsm6dsv16b.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_mmc5983ma.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_ms5611.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_analog.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_io.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_expansion.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_pyro_policy.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_rfd900x.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_rtos.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_rtos_policy.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_spi_device.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_status.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_time.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_storage.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_bringup.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_bringup_protocol.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_usb.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_uart_transport.c</name></file>
       </group>
       <group>

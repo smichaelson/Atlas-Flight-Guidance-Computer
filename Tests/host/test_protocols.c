@@ -47,10 +47,14 @@ static unsigned atlas_test_ble_stores;
 static unsigned atlas_test_ble_poweroffs;
 static bool atlas_test_ble_poweroff_seen;
 static bool atlas_test_ble_transition_reply_enabled;
+static const char *atlas_test_ble_expected_name = "Atlas-FGC";
+static bool atlas_test_ble_name_quoted = true;
+static char atlas_test_ble_last_name_command[128];
 static AtlasUartTransport *atlas_test_rfd_transport;
 static bool atlas_test_rfd_bad_readback;
 static bool atlas_test_rfd_empty_identity;
 static unsigned atlas_test_rfd_stores;
+static char atlas_test_rfd_last_write[64];
 static SPI_HandleTypeDef atlas_test_adxl_spi;
 static SPI_HandleTypeDef atlas_test_lsm_spi;
 static SPI_HandleTypeDef atlas_test_mmc_spi;
@@ -564,6 +568,7 @@ static void ble_command_reply(UART_HandleTypeDef *uart,
                               uint16_t length)
 {
     char command[128];
+    char name_reply[96];
     const char *reply = "OK\r\n";
     size_t command_length = length;
 
@@ -586,9 +591,14 @@ static void ble_command_reply(UART_HandleTypeDef *uart,
     {
         ++atlas_test_ble_profile_queries;
         atlas_test_ble_post_restart_queries += atlas_test_ble_poweroff_seen ? 1U : 0U;
-        reply = atlas_test_ble_bad_readback ?
-                "+UBTLN:\"Wrong\"\r\nOK\r\n" :
-                "+UBTLN:\"Atlas-FGC\"\r\nOK\r\n";
+        (void)snprintf(name_reply, sizeof(name_reply),
+            atlas_test_ble_name_quoted ? "+UBTLN:\"%s\"\r\nOK\r\n" : "+UBTLN:%s\r\nOK\r\n",
+            atlas_test_ble_bad_readback ? "Wrong" : atlas_test_ble_expected_name);
+        reply = name_reply;
+    }
+    else if (strncmp(command, "AT+UBTLN=\"", 10U) == 0)
+    {
+        memcpy(atlas_test_ble_last_name_command, command, command_length + 1U);
     }
     else if (strcmp(command, "AT+UBTLE?") == 0)
     {
@@ -689,9 +699,19 @@ static void rfd_command_reply(UART_HandleTypeDef *uart,
                        "ATS5?\r\nS5: %u\r\nOK\r\n",
                        atlas_test_rfd_bad_readback ? 41U : 42U);
     }
+    else if (strcmp(command, "ATS0?") == 0)
+    {
+        (void)snprintf(reply, sizeof(reply), "ATS0?\r\nS0: 0\r\nOK\r\n");
+    }
+    else if (strcmp(command, "ATS255?") == 0)
+    {
+        (void)snprintf(reply, sizeof(reply), "ATS255?\r\nS255: 4294967295\r\nOK\r\n");
+    }
     else
     {
         (void)snprintf(reply, sizeof(reply), "%s\r\nOK\r\n", command);
+        if (strncmp(command, "ATS", 3U) == 0 && strchr(command, '=') != NULL)
+            memcpy(atlas_test_rfd_last_write, command, command_length + 1U);
         if (strcmp(command, "AT&W") == 0)
         {
             ++atlas_test_rfd_stores;
@@ -891,6 +911,32 @@ static void test_ble_persistent_profile(void)
     CHECK(atlas_test_ble_stores == 1U);
     CHECK(atlas_test_ble_poweroffs == 1U);
 
+    /* Check both accepted readback forms and exact shortest/longest name lines.
+     * The host reference uses libc formatting; production code deliberately does not. */
+    const char *names[] = {"A", "ABCDEFGHIJKLMNOPQRSTUVWXYZ123"};
+    ble.command_mode = true;
+    for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i)
+    {
+        char expected_command[64];
+        atlas_test_ble_expected_name = names[i];
+        atlas_test_ble_name_quoted = i != 0U;
+        CHECK(AtlasBle_ConfigureSps(&ble, names[i], false) == ATLAS_OK);
+        (void)snprintf(expected_command, sizeof(expected_command), "AT+UBTLN=\"%s\"", names[i]);
+        CHECK(strcmp(atlas_test_ble_last_name_command, expected_command) == 0);
+    }
+    char unterminated_name[30];
+    memset(unterminated_name, 'A', sizeof(unterminated_name));
+    const uint32_t commands_before = ble.health.commands_sent;
+    CHECK(AtlasBle_ConfigureSps(&ble, "", false) == ATLAS_ERROR_ARGUMENT);
+    CHECK(AtlasBle_ConfigureSps(&ble, "bad\\name", false) == ATLAS_ERROR_ARGUMENT);
+    CHECK(AtlasBle_ConfigureSps(&ble, "bad\"name", false) == ATLAS_ERROR_ARGUMENT);
+    CHECK(AtlasBle_ConfigureSps(&ble, "bad,name", false) == ATLAS_ERROR_ARGUMENT);
+    CHECK(AtlasBle_ConfigureSps(&ble, "bad\nname", false) == ATLAS_ERROR_ARGUMENT);
+    CHECK(AtlasBle_ConfigureSps(&ble, unterminated_name, false) == ATLAS_ERROR_ARGUMENT);
+    CHECK(ble.health.commands_sent == commands_before);
+    atlas_test_ble_expected_name = "Atlas-FGC";
+    atlas_test_ble_name_quoted = true;
+
     ble.command_mode = true;
     atlas_test_ble_bad_readback = true;
     atlas_test_ble_poweroff_seen = false;
@@ -975,6 +1021,11 @@ static void test_rfd_parameter_readback(void)
           ATLAS_ERROR_PROTOCOL);
     CHECK(radio.health.configuration_mismatches == 1U);
     CHECK(atlas_test_rfd_stores == 1U);
+    atlas_test_rfd_bad_readback = false;
+    CHECK(AtlasRfd900x_SetParameter(&radio, 0U, 0U, false) == ATLAS_OK);
+    CHECK(strcmp(atlas_test_rfd_last_write, "ATS0=0") == 0);
+    CHECK(AtlasRfd900x_SetParameter(&radio, UINT8_MAX, UINT32_MAX, false) == ATLAS_OK);
+    CHECK(strcmp(atlas_test_rfd_last_write, "ATS255=4294967295") == 0);
     AtlasTest_SetUartTransmitHook(NULL);
     atlas_test_rfd_transport = NULL;
 }
@@ -1004,6 +1055,13 @@ static void test_rtos_period_policy(void)
     CHECK(AtlasRtosPolicy_PeriodDue(105U, 95U, 10U));
     CHECK(!AtlasRtosPolicy_PeriodDue(105U, 95U, 0U));
     CHECK(AtlasRtosPolicy_PeriodDue(4U, UINT32_MAX - 5U, 10U));
+    CHECK(!AtlasRtosPolicy_PeriodDue(4U, 0U, UINT32_C(0x80000000)));
+    CHECK(!AtlasRtosPolicy_ResponseLate(109U, 100U, 10U));
+    CHECK(AtlasRtosPolicy_ResponseLate(110U, 100U, 10U));
+    CHECK(AtlasRtosPolicy_ResponseLate(150U, 100U, 10U)); /* Late release, quick hook. */
+    CHECK(!AtlasRtosPolicy_ResponseLate(3U, UINT32_MAX - 5U, 10U));
+    CHECK(AtlasRtosPolicy_ResponseLate(4U, UINT32_MAX - 5U, 10U));
+    CHECK(AtlasRtosPolicy_ResponseLate(100U, 100U, 0U));
     CHECK(AtlasRtosPolicy_TimestampFresh(4U, UINT32_MAX - 5U, 10U));
     CHECK(!AtlasRtosPolicy_TimestampFresh(5U, UINT32_MAX - 5U, 10U));
     CHECK(!AtlasRtosPolicy_TimestampFresh(1U, 1U, UINT32_C(0x80000000)));

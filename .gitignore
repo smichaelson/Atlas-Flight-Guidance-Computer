@@ -44,3 +44,8 @@ Desktop.ini
 .vscode/*.log
 .vscode/.browse.VC.db*
 
+# Laptop diagnostics: local environments and potentially sensitive position logs
+__pycache__/
+*.pyc
+.venv/
+/logs/

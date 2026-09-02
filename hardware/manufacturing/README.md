@@ -2,6 +2,8 @@
 
 These files were copied together from the source folder's `Trinity/Manufacturing Files/` directory. They are preserved as a coherent candidate package, but they have not been independently confirmed as the exact package submitted for the already manufactured board.
 
+The import decision and firmware/hardware authority rules are centralized in [Provenance](../../docs/reference/PROVENANCE.md) and [Hardware](../../docs/reference/HARDWARE.md). This manifest does not authorize fabrication.
+
 ## Contents
 
 - Six copper layers: `F_Cu`, `In1_Cu` through `In4_Cu`, and `B_Cu`.
@@ -29,4 +31,3 @@ These files were copied together from the source folder's `Trinity/Manufacturing
 Verify the preserved files from this directory with a SHA-256 tool and compare the result with `SHA256SUMS.txt` before review or ordering.
 
 The source tree also contained a second CPL with the same row count but 98 differing rows. It is intentionally not included here. Do not substitute another CPL by filename alone.
-

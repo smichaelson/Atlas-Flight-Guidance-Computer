@@ -309,7 +309,7 @@ typedef struct
   uint32_t rem_length;
   uint32_t bInterval;
   uint16_t maxpacket;
-  uint8_t status;
+  uint16_t status; /* Atlas: endpoint GET_STATUS transfers two bytes, not is_used. */
   uint8_t is_used;
   uint8_t *pbuffer;
 } USBD_EndpointTypeDef;
@@ -521,4 +521,3 @@ __STATIC_INLINE uint16_t SWAPBYTE(uint8_t *addr)
 /**
   * @}
   */
-

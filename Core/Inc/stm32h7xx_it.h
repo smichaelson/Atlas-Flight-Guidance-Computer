@@ -75,7 +75,7 @@ void USART6_IRQHandler(void);
 void OTG_FS_IRQHandler(void);
 void ECC_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+void ADC_IRQHandler(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

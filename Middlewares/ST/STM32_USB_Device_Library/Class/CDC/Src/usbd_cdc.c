@@ -359,6 +359,7 @@ static uint8_t USBD_CDC_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
   /* Init Xfer states */
   hcdc->TxState = 0U;
   hcdc->RxState = 0U;
+  hcdc->CmdOpCode = 0xFFU; /* No control OUT transaction is pending at configuration. */
 
   if (hcdc->RxBuffer == NULL)
   {
@@ -437,25 +438,52 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
 {
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
   uint16_t len;
-  uint8_t ifalt = 0U;
-  uint16_t status_info = 0U;
+  /* Atlas: EP0 retains the pointer until a later IN interrupt; never use stack data. */
+  static uint8_t ifalt = 0U;
+  static uint16_t status_info = 0U;
   USBD_StatusTypeDef ret = USBD_OK;
 
   if (hcdc == NULL)
   {
+    USBD_CtlError(pdev, req);
+    return (uint8_t)USBD_FAIL;
+  }
+
+  /* Atlas single-ACM profile: reject malformed directions, interfaces and sizes
+   * before touching retained control data. A new SETUP cancels an old OUT. */
+  hcdc->CmdOpCode = 0xFFU;
+  if (req->wIndex >= USBD_MAX_NUM_INTERFACES)
+  {
+    USBD_CtlError(pdev, req);
     return (uint8_t)USBD_FAIL;
   }
 
   switch (req->bmRequest & USB_REQ_TYPE_MASK)
   {
     case USB_REQ_TYPE_CLASS:
+      if (req->wIndex != 0U ||
+          !((req->bRequest == CDC_GET_LINE_CODING && req->bmRequest == 0xA1U &&
+             req->wLength == 7U && req->wValue == 0U) ||
+            (req->bRequest == CDC_SET_LINE_CODING && req->bmRequest == 0x21U &&
+             req->wLength == 7U && req->wValue == 0U) ||
+            (req->bRequest == CDC_SET_CONTROL_LINE_STATE && req->bmRequest == 0x21U &&
+             req->wLength == 0U && (req->wValue & 0xFFFCU) == 0U) ||
+            (req->bRequest == CDC_SEND_BREAK && req->bmRequest == 0x21U && req->wLength == 0U)))
+      {
+        USBD_CtlError(pdev, req);
+        return (uint8_t)USBD_FAIL;
+      }
       if (req->wLength != 0U)
       {
         if ((req->bmRequest & 0x80U) != 0U)
         {
-          ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(req->bRequest,
-                                                                           (uint8_t *)hcdc->data,
-                                                                           req->wLength);
+          /* Atlas local fix: do not transmit stale control data after validation fails. */
+          if (((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(
+                req->bRequest, (uint8_t *)hcdc->data, req->wLength) != (int8_t)USBD_OK)
+          {
+            USBD_CtlError(pdev, req);
+            return (uint8_t)USBD_FAIL;
+          }
 
           len = MIN(CDC_REQ_MAX_DATA_SIZE, req->wLength);
           (void)USBD_CtlSendData(pdev, (uint8_t *)hcdc->data, len);
@@ -470,8 +498,12 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
       }
       else
       {
-        ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(req->bRequest,
-                                                                         (uint8_t *)req, 0U);
+        if (((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(
+              req->bRequest, (uint8_t *)req, 0U) != (int8_t)USBD_OK)
+        {
+          USBD_CtlError(pdev, req);
+          return (uint8_t)USBD_FAIL;
+        }
       }
       break;
 
@@ -614,10 +646,21 @@ static uint8_t USBD_CDC_EP0_RxReady(USBD_HandleTypeDef *pdev)
 
   if ((pdev->pUserData[pdev->classId] != NULL) && (hcdc->CmdOpCode != 0xFFU))
   {
-    ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(hcdc->CmdOpCode,
-                                                                     (uint8_t *)hcdc->data,
-                                                                     (uint16_t)hcdc->CmdLength);
+    /* All supported OUT requests fit in one EP0 packet. A short payload must
+     * not borrow trailing bytes left over from a previous control transfer. */
+    if (USBD_LL_GetRxDataSize(pdev, 0U) != hcdc->CmdLength)
+    {
+      hcdc->CmdOpCode = 0xFFU;
+      return (uint8_t)USBD_FAIL;
+    }
+    const int8_t result = ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(
+      hcdc->CmdOpCode, (uint8_t *)hcdc->data, (uint16_t)hcdc->CmdLength);
     hcdc->CmdOpCode = 0xFFU;
+    if (result != (int8_t)USBD_OK)
+    {
+      USBD_CtlError(pdev, NULL);
+      return (uint8_t)USBD_FAIL;
+    }
   }
 
   return (uint8_t)USBD_OK;
@@ -839,9 +882,11 @@ uint8_t USBD_CDC_TransmitPacket(USBD_HandleTypeDef *pdev)
     pdev->ep_in[CDCInEpAdd & 0xFU].total_length = hcdc->TxLength;
 
     /* Transmit next packet */
-    (void)USBD_LL_Transmit(pdev, CDCInEpAdd, hcdc->TxBuffer, hcdc->TxLength);
-
-    ret = USBD_OK;
+    ret = USBD_LL_Transmit(pdev, CDCInEpAdd, hcdc->TxBuffer, hcdc->TxLength);
+    if (ret != USBD_OK)
+    {
+      hcdc->TxState = 0U; /* Atlas: a rejected launch does not own the endpoint. */
+    }
   }
 
   return (uint8_t)ret;
@@ -893,4 +938,3 @@ uint8_t USBD_CDC_ReceivePacket(USBD_HandleTypeDef *pdev)
 /**
   * @}
   */
-

@@ -11,21 +11,48 @@
             }
         },
         {
+            "name": "Bringup",
+            "displayName": "Atlas PCB bring-up (NO PWM/PYRO)",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ATLAS_BRINGUP": "ON"
+            }
+        },
+        {
+            "name": "BringupRelease",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "ATLAS_BRINGUP": "ON"
+            }
+        },
+        {
             "name": "Debug",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ATLAS_BRINGUP": "OFF"
             }
         },
         {
             "name": "Release",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_BUILD_TYPE": "Release",
+                "ATLAS_BRINGUP": "OFF"
             }
         }
     ],
     "buildPresets": [
+        {
+            "name": "Bringup",
+            "configurePreset": "Bringup"
+        },
+        {
+            "name": "BringupRelease",
+            "configurePreset": "BringupRelease"
+        },
         {
             "name": "Debug",
             "configurePreset": "Debug"

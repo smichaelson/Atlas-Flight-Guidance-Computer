@@ -22,6 +22,7 @@
 #include "atlas_buzzer.h"
 #include "atlas_gnss.h"
 #include "atlas_led.h"
+#include "atlas_io.h"
 #include "atlas_lsm6dsv16b.h"
 #include "atlas_mmc5983ma.h"
 #include "atlas_ms5611.h"
@@ -41,8 +42,12 @@ typedef struct
     UART_HandleTypeDef *gnss_uart;
     UART_HandleTypeDef *radio_uart;
     UART_HandleTypeDef *ble_uart;
+    UART_HandleTypeDef *expansion_uart;
+    I2C_HandleTypeDef *expansion_i2c;
     TIM_HandleTypeDef *microsecond_pps_timer;
     TIM_HandleTypeDef *buzzer_timer;
+    RTC_HandleTypeDef *rtc;
+    AtlasIoHardware io;
 } AtlasBoardHardware;
 
 /** @brief Per-subsystem startup results retained for debugger/telemetry inspection. */
@@ -62,10 +67,19 @@ typedef struct
     AtlasStatus ble;
 } AtlasBoardInitReport;
 
+/** @brief Probe order also used by the versioned bench protocol; do not reorder. */
+typedef enum
+{
+    ATLAS_BOARD_ADXL = 0, ATLAS_BOARD_LSM, ATLAS_BOARD_MMC, ATLAS_BOARD_BARO,
+    ATLAS_BOARD_BNO, ATLAS_BOARD_GNSS, ATLAS_BOARD_BLE, ATLAS_BOARD_RADIO,
+    ATLAS_BOARD_MODULE_COUNT
+} AtlasBoardModule;
+
 /** @brief Complete project-owned driver state for one Atlas board. */
 typedef struct
 {
     AtlasAdxl375 adxl375;
+    AtlasBoardHardware hardware;
     AtlasLsm6dsv16b lsm6dsv16b;
     AtlasMmc5983ma mmc5983ma;
     AtlasMs5611 ms5611;
@@ -83,6 +97,7 @@ typedef struct
     AtlasBoardInitReport init;
     AtlasStatus runtime_fault;
     uint32_t service_cycles;
+    uint32_t attempted_modules;
     bool init_complete;
 } AtlasBoard;
 
@@ -94,6 +109,14 @@ typedef struct
  * @note Initialization continues after a module failure to produce a complete diagnostic report.
  */
 AtlasStatus AtlasBoard_Init(AtlasBoard *board, const AtlasBoardHardware *hardware);
+
+/** @brief Perform one module's startup exactly once per boot, retaining its result.
+ * @param board Prepared board. @param module Selected subsystem.
+ * @return Its probe/configuration result, or STATE if already attempted.
+ * @note Pre-scheduler or sole sensor-owner only. Bringup starts with all modules
+ *       unprobed; the normal image still probes every module during Board_Init.
+ *       A failed probe requires reset/power-cycle before another attempt. No NVM writes. */
+AtlasStatus AtlasBoard_ProbeModule(AtlasBoard *board, AtlasBoardModule module);
 
 /**
  * @brief Service all initialized interrupt-driven transports and scheduled outputs once.

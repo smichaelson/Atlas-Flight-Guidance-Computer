@@ -4,9 +4,9 @@ Checks Atlas documentation links, repository hygiene, and project-owned file hea
 
 .DESCRIPTION
 Major functions:
-- Resolve and verify every local Markdown link target.
+- Resolve local Markdown targets and ATX-heading anchors outside fenced code.
 - Reject raw KiCad sources, obsolete Atlas_Origins paths, and build artifacts.
-- Require onboarding documents plus Doxygen file/function tags for App firmware.
+- Require the consolidated documentation hub and Doxygen tags for App firmware.
 - Verify RTOS static-allocation policy and CMake/IAR source membership.
 
 The script is read-only. Build directories and Git internals are excluded so a
@@ -15,29 +15,51 @@ developer can run it after compiling without creating false failures.
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$excludedDirectoryPattern = '[\\/](?:\.git|build)(?:[\\/]|$)'
+$excludedDirectoryPattern = '[\\/](?:\.git|build|\.venv|__pycache__|logs)(?:[\\/]|$)'
 $allFiles = @(Get-ChildItem -LiteralPath $repositoryRoot -Recurse -File |
     Where-Object { $_.FullName -notmatch $excludedDirectoryPattern })
 $failures = [System.Collections.Generic.List[string]]::new()
 
 $requiredPaths = @(
     "README.md",
-    "STANDARDS.md",
     "CMakeLists.txt",
     "EWARM\Atlas.ewp",
-    "docs\PROJECT_STATUS.md",
-    "docs\FIRMWARE_ARCHITECTURE.md",
-    "docs\BUILDING.md",
-    "docs\BRINGUP.md",
-    "docs\VALIDATION.md",
-    "docs\modules\README.md",
-    "docs\reviews\README.md",
-    "docs\reviews\REVIEW_1_HARDWARE_PROTOCOL.md",
-    "docs\reviews\REVIEW_2_IMPLEMENTATION_BUILD.md",
-    "docs\reviews\REVIEW_3_DOCUMENTATION_ONBOARDING.md",
-    "docs\reviews\REVIEW_4_RTOS_ARCHITECTURE.md",
-    "docs\reviews\REVIEW_5_RTOS_IMPLEMENTATION_BUILD.md",
-    "docs\reviews\REVIEW_6_RTOS_DOCUMENTATION_ONBOARDING.md",
+    "EWARM\stm32h743xx_flash.icf",
+    "STM32H743XX_FLASH.ld",
+    "docs\README.md",
+    "docs\QUICK_START.md",
+    "docs\startup.md",
+    "App\Inc\atlas_build.h",
+    "App\Inc\atlas_bringup.h",
+    "App\Inc\atlas_bringup_protocol.h",
+    "App\Src\atlas_bringup.c",
+    "App\Src\atlas_bringup_protocol.c",
+    "tools\bringup\dashboard.py",
+    "tools\bringup\protocol.py",
+    "tools\bringup\image_check.py",
+    "tools\bringup\card_check.py",
+    "Tests\bringup\run_bringup_tests.ps1",
+    "docs\SYSTEMS.md",
+    "docs\PERIPHERALS.md",
+    "docs\DEVELOPMENT.md",
+    "docs\REVIEW_REPORT.md",
+    "docs\reference\RTOS.md",
+    "docs\reference\HARDWARE.md",
+    "docs\reference\PROVENANCE.md",
+    "docs\archive\REVIEW_HISTORY.md",
+    "Tests\review\run_review_probes.ps1",
+    "Tests\review\test_timing.c",
+    "Tests\review\test_gnss_integration.c",
+    "Tests\review\test_sd_integration.c",
+    "Tests\review\test_analog.c",
+    "Tests\review\test_pyro_policy.c",
+    "Tests\services\run_service_tests.ps1",
+    "Tests\services\test_io.c",
+    "Tests\services\test_usb_cdc.c",
+    "Tests\services\test_usb_owner.c",
+    "Tests\services\test_storage_owner.c",
+    "Tests\services\test_expansion.c",
+    "Tests\services\test_sysmem.c",
     "App\Inc\FreeRTOSConfig.h",
     "App\Inc\atlas_rtos.h",
     "App\Inc\atlas_rtos_policy.h",
@@ -48,6 +70,10 @@ $requiredPaths = @(
     "ThirdParty\FreeRTOS-Kernel\LICENSE",
     "ThirdParty\FreeRTOS-Kernel\README.md"
 )
+$requiredPaths += @(
+    "ADXL375", "LSM6DSV16B", "MMC5983MA", "MS5611", "BNO085",
+    "GNSS", "BLE", "RFD900X", "LED", "BUZZER"
+) | ForEach-Object { "docs\reference\modules\$_.md" }
 foreach ($relativePath in $requiredPaths) {
     if (-not (Test-Path -LiteralPath (Join-Path $repositoryRoot $relativePath))) {
         $failures.Add("Missing required repository document: $relativePath")
@@ -63,7 +89,7 @@ $forbiddenBuildExtensions = @(".elf", ".hex", ".bin", ".o", ".obj", ".su", ".map
 foreach ($file in $allFiles) {
     if (($forbiddenKiCadExtensions -contains $file.Extension.ToLowerInvariant()) -or
         ($file.Name -in "sym-lib-table", "fp-lib-table") -or
-        ($file.FullName -match '(?i)Atlas[_ -]?Origins')) {
+        ($file.FullName -match '(?i)Atlas[_ -]?Origins?')) {
         $failures.Add("Forbidden raw/obsolete design artifact: $($file.FullName)")
     }
     if ($forbiddenBuildExtensions -contains $file.Extension.ToLowerInvariant()) {
@@ -93,7 +119,9 @@ $projectSources = @($projectSourceDirectories | ForEach-Object {
 })
 foreach ($file in $projectSources) {
     $content = Get-Content -LiteralPath $file.FullName -Raw
-    if ($content -match '\b[A-Za-z_][A-Za-z0-9_]*FromISR\s*\(') {
+    # Inspect kernel API naming, not project adapters such as BSP_SD_DetectFromISR
+    # (which only records a media-generation edge and calls no kernel function).
+    if ($content -match '\b(?:[xv]|ux|ul)[A-Z][A-Za-z0-9_]*FromISR\s*\(|\bport(?:YIELD_FROM_ISR|END_SWITCHING_ISR)\s*\(') {
         $relativeFile = [System.IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
         $failures.Add("ISR-to-FreeRTOS API requires a fresh priority audit: $relativeFile")
     }
@@ -106,6 +134,9 @@ foreach ($file in (Get-ChildItem -LiteralPath $appSourceDirectory -File -Filter 
     }
     if ((Get-Content -LiteralPath $file.FullName -Raw) -match '\bHAL_Delay\s*\(') {
         $failures.Add("Post-start-capable App driver bypasses AtlasTime_DelayMs(): $($file.Name)")
+    }
+    if ((Get-Content -LiteralPath $file.FullName -Raw) -match '\b(?:malloc|calloc|realloc|free|[svf]*printf|[svf]*scanf)\s*\(') {
+        $failures.Add("App source introduces allocation or libc formatted I/O; review static-memory contract: $($file.Name)")
     }
 }
 
@@ -177,25 +208,134 @@ if ((Test-Path -LiteralPath $cmakePath) -and (Test-Path -LiteralPath $iarPath)) 
     }
 }
 
+# The main-stack guard is a cross-file contract, not just a map-review note.
+$gnuLayout = Get-Content -LiteralPath (Join-Path $repositoryRoot 'STM32H743XX_FLASH.ld') -Raw
+$iarLayout = Get-Content -LiteralPath (Join-Path $repositoryRoot 'EWARM\stm32h743xx_flash.icf') -Raw
+$mainStartup = Get-Content -LiteralPath (Join-Path $repositoryRoot 'Core\Src\main.c') -Raw
+$stackContracts = @(
+    @{ Name = 'GNU fixed MSP assertion'; Text = $gnuLayout; Pattern = 'ASSERT\(_sstack\s*==\s*0x2001C000' },
+    @{ Name = 'GNU data/guard exclusion'; Text = $gnuLayout; Pattern = 'ASSERT\(_ebss\s*\+\s*_Min_Heap_Size\s*<=\s*__atlas_msp_guard_start__' },
+    @{ Name = 'GNU 256-byte guard'; Text = $gnuLayout; Pattern = '__atlas_msp_guard_start__\s*=\s*_sstack\s*-\s*0x100\s*;' },
+    @{ Name = 'IAR 16-KiB MSP size'; Text = $iarLayout; Pattern = '__ICFEDIT_size_cstack__\s*=\s*0x4000\s*;' },
+    @{ Name = 'IAR fixed MSP base'; Text = $iarLayout; Pattern = '__atlas_msp_start__\s*=\s*0x2001C000\s*;' },
+    @{ Name = 'IAR fixed guard base'; Text = $iarLayout; Pattern = '__atlas_msp_guard_start__\s*=\s*0x2001BF00\s*;' },
+    @{ Name = 'IAR explicit stack placement'; Text = $iarLayout; Pattern = 'place at address mem:__atlas_msp_start__\s*\{\s*block CSTACK\s*\}' },
+    @{ Name = 'IAR writable-data exclusion'; Text = $iarLayout; Pattern = 'define region RAM_region\s*=\s*mem:\[from __ICFEDIT_region_RAM_start__\s+to\s*\(__atlas_msp_guard_start__\s*-\s*1\)\]' },
+    @{ Name = 'MPU fixed guard base'; Text = $mainStartup; Pattern = 'MPU_InitStruct\.BaseAddress\s*=\s*0x2001BF00\s*;' },
+    @{ Name = 'MPU guard size'; Text = $mainStartup; Pattern = 'MPU_InitStruct\.Size\s*=\s*MPU_REGION_SIZE_256B\s*;' }
+)
+foreach ($contract in $stackContracts) {
+    if ($contract.Text -notmatch $contract.Pattern) {
+        $failures.Add("Main-stack/MPU contract needs renewed review: $($contract.Name)")
+    }
+}
+
+<#
+.SYNOPSIS
+Removes fenced code from the Markdown subset used by Atlas documentation.
+.PARAMETER Content
+Complete document text.
+.OUTPUTS
+String with fence contents replaced by blank lines.
+#>
+function Get-MarkdownWithoutFences {
+    param([AllowEmptyString()][string]$Content)
+    $visibleLines = [System.Collections.Generic.List[string]]::new()
+    $fenceCharacter = ''
+    $fenceLength = 0
+    foreach ($line in ($Content -split '\r?\n')) {
+        if ($fenceCharacter -ne '') {
+            $closingPattern = '^\s{0,3}' + [regex]::Escape($fenceCharacter) +
+                              '{' + $fenceLength + ',}\s*$'
+            if ($line -match $closingPattern) { $fenceCharacter = '' }
+            $visibleLines.Add('')
+            continue
+        }
+        $opening = [regex]::Match($line, '^\s{0,3}(?<fence>\x60{3,}|~{3,})')
+        if ($opening.Success) {
+            $fence = $opening.Groups['fence'].Value
+            $fenceCharacter = $fence[0].ToString()
+            $fenceLength = $fence.Length
+            $visibleLines.Add('')
+        }
+        else { $visibleLines.Add($line) }
+    }
+    return $visibleLines -join [Environment]::NewLine
+}
+
+<#
+.SYNOPSIS
+Builds GitHub-style anchors for Atlas ATX headings, including duplicate suffixes.
+.PARAMETER Content
+Complete Markdown document; fenced code is ignored.
+.OUTPUTS
+An ordinal HashSet of heading anchors. This is not a general CommonMark parser.
+#>
+function Get-MarkdownAnchorSet {
+    param([AllowEmptyString()][string]$Content)
+    $anchors = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal)
+    $body = Get-MarkdownWithoutFences -Content $Content
+    foreach ($line in ($body -split '\r?\n')) {
+        $heading = [regex]::Match($line, '^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$')
+        if (-not $heading.Success) { continue }
+        $label = $heading.Groups[1].Value
+        $label = [regex]::Replace($label, '!?\[([^\]]*)\]\([^)]+\)', '$1')
+        $label = [regex]::Replace($label, '<[^>]+>', '')
+        $slug = [regex]::Replace($label.Trim().ToLowerInvariant(),
+                                  '[^\p{L}\p{M}\p{N}_\-\s]', '')
+        $slug = [regex]::Replace($slug, '\s', '-')
+        $candidate = $slug
+        $suffix = 0
+        while ($anchors.Contains($candidate)) {
+            ++$suffix
+            $candidate = "$slug-$suffix"
+        }
+        [void]$anchors.Add($candidate)
+    }
+    # Prevent PowerShell from enumerating the set into a string array on return.
+    return ,$anchors
+}
+
 $markdownFiles = @($allFiles | Where-Object { $_.Extension -eq ".md" })
+$anchorCache = @{}
+$checkedLocalLinkCount = 0
+$checkedAnchorCount = 0
 $linkPattern = [regex]'!?\[[^\]]*\]\((?<target>[^)]+)\)'
 foreach ($file in $markdownFiles) {
-    $content = Get-Content -LiteralPath $file.FullName -Raw
+    $content = Get-MarkdownWithoutFences -Content (
+        Get-Content -LiteralPath $file.FullName -Raw)
     foreach ($match in $linkPattern.Matches($content)) {
         $target = $match.Groups["target"].Value.Trim().Trim('<', '>')
-        if (($target -eq "") -or ($target -match '^(?:https?://|mailto:|#)')) {
+        if (($target -eq "") -or ($target -match '^(?:https?://|mailto:)')) {
             continue
         }
-        $localTarget = ($target -split '#', 2)[0]
-        if ($localTarget -eq "") {
-            continue
+        $parts = $target -split '#', 2
+        $localTarget = [Uri]::UnescapeDataString($parts[0])
+        if ($localTarget -eq '') {
+            $resolvedTarget = $file.FullName
         }
-        $localTarget = [Uri]::UnescapeDataString($localTarget)
-        $resolvedTarget = [System.IO.Path]::GetFullPath(
-            (Join-Path $file.DirectoryName $localTarget))
+        else {
+            $resolvedTarget = [System.IO.Path]::GetFullPath(
+                (Join-Path $file.DirectoryName $localTarget))
+        }
+        ++$checkedLocalLinkCount
+        $relativeFile = [System.IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
         if (-not (Test-Path -LiteralPath $resolvedTarget)) {
-            $relativeFile = [System.IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
             $failures.Add("Broken local Markdown link in ${relativeFile}: $target")
+            continue
+        }
+        if (($parts.Count -eq 2) -and ($parts[1] -ne '') -and
+            ([IO.Path]::GetExtension($resolvedTarget) -eq '.md')) {
+            ++$checkedAnchorCount
+            if (-not $anchorCache.ContainsKey($resolvedTarget)) {
+                $anchorCache[$resolvedTarget] = Get-MarkdownAnchorSet -Content (
+                    Get-Content -LiteralPath $resolvedTarget -Raw)
+            }
+            $fragment = [Uri]::UnescapeDataString($parts[1])
+            if (-not $anchorCache[$resolvedTarget].Contains($fragment)) {
+                $failures.Add("Broken Markdown heading anchor in ${relativeFile}: $target")
+            }
         }
     }
 }
@@ -213,7 +353,7 @@ foreach ($file in $appFiles) {
 
 # Scan function definitions, not declarations or calls, and require the tags that
 # make the implementation navigable without duplicating a full C parser here.
-$definitionPattern = '^(?<storage>(?:static|__weak)\s+)?(?:const\s+)?(?<type>void|bool|char|size_t|TickType_t|BaseType_t|UBaseType_t|u?int(?:8|16|32|64)_t|int(?:8|16|32|64)_t|int|float|double|Atlas[A-Za-z0-9_]+|HAL_StatusTypeDef|sh2_Hal_t)\s*(?<pointer>\*+)?\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\('
+$definitionPattern = '^(?<storage>(?:static|__weak)\s+)?(?:const\s+)?(?<type>void|bool|char|size_t|TickType_t|BaseType_t|UBaseType_t|u?int(?:8|16|32|64)_t|int(?:8|16|32|64)_t|int|float|double|Atlas[A-Za-z0-9_]+|HAL_StatusTypeDef|FRESULT|sh2_Hal_t)\s*(?<pointer>\*+)?\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\('
 foreach ($file in ($appFiles | Where-Object { $_.Extension -eq ".c" })) {
     $lines = @(Get-Content -LiteralPath $file.FullName)
     for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
@@ -240,17 +380,17 @@ foreach ($file in ($appFiles | Where-Object { $_.Extension -eq ".c" })) {
         while (($commentEnd -ge 0) -and [string]::IsNullOrWhiteSpace($lines[$commentEnd])) {
             --$commentEnd
         }
-        if (($commentEnd -lt 0) -or ($lines[$commentEnd].Trim() -ne "*/")) {
+        if (($commentEnd -lt 0) -or (-not $lines[$commentEnd].TrimEnd().EndsWith("*/"))) {
             $failures.Add("Missing adjacent Doxygen block: $($file.Name):$($lineIndex + 1) $functionName")
             $lineIndex = $signatureEnd
             continue
         }
 
         $commentStart = $commentEnd
-        while (($commentStart -ge 0) -and ($lines[$commentStart].Trim() -ne "/**")) {
+        while (($commentStart -ge 0) -and ($lines[$commentStart] -notmatch '/\*')) {
             --$commentStart
         }
-        if ($commentStart -lt 0) {
+        if (($commentStart -lt 0) -or ($lines[$commentStart] -notmatch '^\s*/\*\*')) {
             $failures.Add("Missing Doxygen opener: $($file.Name):$($lineIndex + 1) $functionName")
             $lineIndex = $signatureEnd
             continue
@@ -259,11 +399,14 @@ foreach ($file in ($appFiles | Where-Object { $_.Extension -eq ".c" })) {
         if ($comment -notmatch '@brief\b') {
             $failures.Add("Missing @brief: $($file.Name):$($lineIndex + 1) $functionName")
         }
-        if (($definition.Groups["type"].Value -ne "void") -and
+        if ((($definition.Groups["type"].Value -ne "void") -or $definition.Groups["pointer"].Success) -and
             ($comment -notmatch '@return\b')) {
             $failures.Add("Missing @return: $($file.Name):$($lineIndex + 1) $functionName")
         }
 
+        # Ignore inline function bodies when locating the closing signature ')'.
+        # Both compact and multiline adjacent Doxygen blocks are valid C/Doxygen.
+        $signature = $signature.Substring(0, $signature.IndexOf('{'))
         $openParenthesis = $signature.IndexOf('(')
         $closeParenthesis = $signature.LastIndexOf(')')
         if (($openParenthesis -ge 0) -and ($closeParenthesis -gt $openParenthesis)) {
@@ -296,4 +439,4 @@ if ($failures.Count -ne 0) {
     throw "Repository review failed with $($failures.Count) finding(s)."
 }
 
-Write-Host "Atlas repository review passed: links, documents, Doxygen tags, artifact policy, and RTOS build membership."
+Write-Host "Atlas repository review passed: $checkedLocalLinkCount local links, $checkedAnchorCount heading anchors, documents, Doxygen tags, artifact policy, and RTOS build membership."

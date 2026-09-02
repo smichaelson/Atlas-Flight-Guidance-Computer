@@ -17,6 +17,7 @@
   */
 /* USER CODE END Header */
 #include "fatfs.h"
+#include "atlas_storage.h"
 
 uint8_t retSD;    /* Return value for SD */
 char SDPath[4];   /* SD logical drive path */
@@ -45,7 +46,7 @@ void MX_FATFS_Init(void)
 DWORD get_fattime(void)
 {
   /* USER CODE BEGIN get_fattime */
-  return 0;
+  return AtlasStorage_FatTime();
   /* USER CODE END get_fattime */
 }
 

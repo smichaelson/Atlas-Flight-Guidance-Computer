@@ -346,7 +346,7 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
   if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
   {
-    Error_Handler( );
+    return USBD_FAIL;
   }
 
 #if (USE_HAL_PCD_REGISTER_CALLBACKS == 1U)
@@ -365,9 +365,16 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   HAL_PCD_RegisterIsoInIncpltCallback(&hpcd_USB_OTG_FS, PCD_ISOINIncompleteCallback);
 #endif /* USE_HAL_PCD_REGISTER_CALLBACKS */
   /* USER CODE BEGIN TxRx_Configuration */
-  HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 0x80);
-  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x40);
-  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x80);
+  /* Sizes are 32-bit words: 128 RX + 64 EP0 + 64 data + 16 notification.
+   * Allocate a FIFO for every opened IN endpoint, including CDC's EP2.
+   * 272 words stays below the previous 320-word FS allocation. */
+  if (HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 0x80) != HAL_OK ||
+      HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x40) != HAL_OK ||
+      HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x40) != HAL_OK ||
+      HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 2, 0x10) != HAL_OK)
+  {
+    return USBD_FAIL;
+  }
   /* USER CODE END TxRx_Configuration */
   }
   return USBD_OK;
@@ -627,9 +634,8 @@ USBD_StatusTypeDef USBD_LL_SetTestMode(USBD_HandleTypeDef *pdev, uint8_t testmod
   */
 void *USBD_static_malloc(uint32_t size)
 {
-  UNUSED(size);
   static uint32_t mem[(sizeof(USBD_CDC_HandleTypeDef)/4)+1];/* On 32-bit boundary */
-  return mem;
+  return size <= sizeof(mem) ? mem : NULL;
 }
 
 /**

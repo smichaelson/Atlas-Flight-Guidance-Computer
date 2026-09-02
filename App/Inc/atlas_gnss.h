@@ -83,6 +83,8 @@ typedef struct
     uint32_t valid_ubx_frames;
     uint32_t checksum_errors;
     uint32_t oversize_frames;
+    uint32_t frame_timeouts;
+    uint32_t transport_resynchronizations;
     uint32_t nav_pvt_frames;
     uint32_t malformed_nav_pvt;
     uint32_t acknowledgements;
@@ -118,6 +120,10 @@ typedef struct
     uint16_t payload_length;
     uint16_t payload_index;
     uint32_t discard_remaining;
+    uint32_t frame_started_ms;
+    uint32_t last_byte_ms;
+    uint32_t observed_dropped_bytes;
+    uint32_t observed_receive_restarts;
     uint8_t checksum_a;
     uint8_t checksum_b;
     uint8_t received_checksum_a;

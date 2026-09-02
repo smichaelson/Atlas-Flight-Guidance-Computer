@@ -69,10 +69,27 @@ _sstack = _estack - _Min_Stack_Size;
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0x0;      /* required amount of heap  */
 _Min_Stack_Size = 0x4000; /* required amount of stack */
+__atlas_msp_guard_start__ = _sstack - 0x100;
+
+/* MPU_Config protects exactly 0x2001BF00..0x2001BFFF. Keep both
+   placement and future writable-data growth consistent with that guard. */
+ASSERT(_sstack == 0x2001C000, "Atlas MSP placement must match MPU_Config")
+ASSERT(_ebss + _Min_Heap_Size <= __atlas_msp_guard_start__,
+       "Atlas DTCM data overlaps the main-stack MPU guard")
 
 /* Define output sections */
 SECTIONS
 {
+  /* Private DMA buffers: CPU initializes complete ECC words explicitly.
+     DTCM is NOT reachable by DMA1/DMA2. D-cache remains disabled. */
+  .atlas_dma (NOLOAD) : ALIGN(32)
+  {
+    __atlas_dma_start__ = .;
+    *(.atlas_dma)
+    . = ALIGN(32);
+    __atlas_dma_end__ = .;
+  } >RAM
+
   /* The startup code goes first into FLASH */
   .isr_vector :
   {

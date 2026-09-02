@@ -17,7 +17,7 @@
   */
 /* USER CODE END Header */
 
-/* Note: code generation based on sd_diskio_dma_template.h */
+/* Atlas uses polling in one storage task; preserve this port during regeneration. */
 
 /* Define to prevent recursive inclusion -------------------------------------*/
 #ifndef __SD_DISKIO_H
@@ -29,10 +29,16 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "bsp_driver_sd.h"
+#include "ff_gen_drv.h"
 /* Exported types ------------------------------------------------------------*/
 /* Exported constants --------------------------------------------------------*/
 /* Exported functions ------------------------------------------------------- */
 extern const Diskio_drvTypeDef  SD_Driver;
+/** @brief Invalidate/reset the optional medium; storage-owner context only. */
+void SD_Invalidate(void);
+/** @brief Authorize exactly one initialization as part of an explicit owner mount.
+ * @note Never call from a file read/write or from another task. */
+void SD_PrepareMount(void);
 
 /* USER CODE BEGIN lastSection */
 /* can be used to modify / undefine previous code or add new definitions */

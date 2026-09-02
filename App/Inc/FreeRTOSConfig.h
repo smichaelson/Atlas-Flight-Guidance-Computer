@@ -4,7 +4,7 @@
  *
  * Major functions and configuration decisions:
  * - 1 kHz preemptive scheduling with eight application priority levels.
- * - Static allocation only; no heap implementation is linked into the flight image.
+ * - Static allocation only; no FreeRTOS heap and no permitted C-library heap growth.
  * - Cortex-M7 FPU support, stack-overflow checking, and project-owned assertion handling.
  * - Native FreeRTOS APIs with generated STM32 exception names mapped to the kernel port.
  */

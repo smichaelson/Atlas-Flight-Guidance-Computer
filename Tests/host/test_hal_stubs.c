@@ -30,7 +30,7 @@ static uint32_t atlas_test_high_b;
 static uint32_t atlas_test_high_d;
 static uint32_t atlas_test_high_e;
 static uint32_t atlas_test_high_g;
-uint32_t atlas_test_tim15_instance;
+TIM_TypeDef atlas_test_tim15_instance;
 static uint32_t atlas_test_timer_mode_ch1;
 static uint32_t atlas_test_timer_mode_ch2;
 static uint32_t atlas_test_timer_started_mask;
@@ -249,9 +249,22 @@ HAL_StatusTypeDef HAL_UARTEx_SetRxFifoThreshold(UART_HandleTypeDef *uart,
 HAL_StatusTypeDef HAL_UARTEx_EnableFifoMode(UART_HandleTypeDef *uart)
 { (void)uart; return HAL_OK; }
 
-/** @brief Accept host timer start. */
+/**
+ * @brief Model the HAL's READY-to-BUSY counter-start contract.
+ * @param timer Initialized mock timer.
+ * @return HAL_OK once; HAL_ERROR for an invalid/duplicate start.
+ */
 HAL_StatusTypeDef HAL_TIM_Base_Start(TIM_HandleTypeDef *timer)
-{ (void)timer; return HAL_OK; }
+{
+    if ((timer == NULL) || (timer->Instance == NULL) ||
+        (timer->State != HAL_TIM_STATE_READY))
+    {
+        return HAL_ERROR;
+    }
+    timer->State = HAL_TIM_STATE_BUSY;
+    timer->Instance->CR1 |= TIM_CR1_CEN;
+    return HAL_OK;
+}
 
 /** @brief Accept host input-capture start. */
 HAL_StatusTypeDef HAL_TIM_IC_Start_IT(TIM_HandleTypeDef *timer, uint32_t channel)
