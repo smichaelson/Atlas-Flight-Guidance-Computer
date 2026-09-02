@@ -26,14 +26,10 @@ For implementation, use [Peripheral services](docs/PERIPHERALS.md) and [Developm
 | [CMakeLists.txt](CMakeLists.txt), [EWARM](EWARM/) | Arm GNU and IAR project definitions |
 | [Atlas.ioc](Atlas.ioc) | Generator inputs; runtime overrides and manual integrations must survive regeneration |
 
-J9's intended radio is **RFD900x**, confirmed by the owner. “LoRa” is a legacy connector label, not a Semtech LoRa protocol selection.
-
 ## Safety and provenance
 
 All PWM, general GPIO and pyro outputs start disabled/low. The isolated **Bringup** image never enables PWM/pyro or calls the flight hook; it permits only explicit, one-second logic-GPIO tests and indicator/link/media actions. In the normal application, pyro arming and PWM operation require explicit qualified configuration; no flight decisions or remote firing parser are provided. The specified pyro policy is a 500 ms pulse, at least 500 ms OFF, and at most three retries: **four attempts per channel per boot**. Re-arming does not refill that budget.
 
 Keep the physical pyro arm link open and disconnect energetic loads and servos during ordinary development. J5's armed feed bypasses the main eFuse. Use current-limited bench power; USB does not power the system rails. Output-low is an electrical state, not a guaranteed safe mechanical servo position.
-
-Raw KiCad projects and obsolete origin documents remain excluded. The separate original `Atlas` folder is untouched. Hardware exports are references, not assembled-board or fabrication approval.
 
 No project-level license has been selected; vendor licenses remain applicable. See [provenance](docs/reference/PROVENANCE.md).
