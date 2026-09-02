@@ -227,6 +227,7 @@
           <state>USE_PWR_LDO_SUPPLY</state>
           <state>USE_HAL_DRIVER</state>
           <state>STM32H743xx</state>
+          <state>ATLAS_USE_FREERTOS=1</state>
           <state></state>
         </option>
         <option>
@@ -352,6 +353,10 @@
         </option>
         <option>
           <name>CCIncludePath2</name>
+          <state>$PROJ_DIR$/../App/Inc</state>
+          <state>$PROJ_DIR$/../ThirdParty/CEVA/sh2</state>
+          <state>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/include</state>
+          <state>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/portable/IAR/ARM_CM7/r0p1</state>
           <state>$PROJ_DIR$/../Core/Inc</state>
           <state>$PROJ_DIR$/../Drivers/STM32H7xx_HAL_Driver/Inc</state>
           <state>$PROJ_DIR$/../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy</state>
@@ -1098,6 +1103,26 @@
         </file>
       </group>
       <group>
+        <name>Atlas Drivers</name>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_adxl375.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_ble.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_bno085.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_board.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_buzzer.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_gnss.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_led.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_lsm6dsv16b.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_mmc5983ma.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_ms5611.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_rfd900x.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_rtos.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_rtos_policy.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_spi_device.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_status.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_time.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_uart_transport.c</name></file>
+      </group>
+      <group>
         <name>FATFS</name>
         <group>
           <name>Target</name>
@@ -1136,6 +1161,25 @@
           </file>
         </group>
       </group>
+    </group>
+  </group>
+  <group>
+    <name>ThirdParty</name>
+    <group>
+      <name>CEVA SH2</name>
+      <file><name>$PROJ_DIR$/../ThirdParty/CEVA/sh2/sh2.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/CEVA/sh2/sh2_SensorValue.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/CEVA/sh2/sh2_util.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/CEVA/sh2/shtp.c</name></file>
+    </group>
+    <group>
+      <name>FreeRTOS Kernel</name>
+      <file><name>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/list.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/queue.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/stream_buffer.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/tasks.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/portable/IAR/ARM_CM7/r0p1/port.c</name></file>
+      <file><name>$PROJ_DIR$/../ThirdParty/FreeRTOS-Kernel/portable/IAR/ARM_CM7/r0p1/portasm.s</name></file>
     </group>
   </group>
   <group>

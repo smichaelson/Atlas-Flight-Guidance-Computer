@@ -50,6 +50,9 @@ Before regenerating from `Atlas.ioc`:
 - The common language baseline is C11. New code must compile without new warnings under the supported Arm GNU and IAR configurations.
 - Use fixed-width integer types for hardware-facing data and serialized formats. State units in names or types, such as `timeout_ms`, `period_us`, `voltage_mv`, and `temperature_cdeg`.
 - Use descriptive module prefixes for externally visible symbols. Keep file-local functions and state `static`.
+- Every project-owned `.c` and `.h` file starts with a Doxygen file header that names the file, states its purpose, and lists its major public functions or definitions.
+- Every function, including file-local helpers, has a documentation block with `@brief`, each applicable `@param`, and `@return`. Add `@note`, `@warning`, or `@pre` when a mode, context, persistence, or safety condition would otherwise be easy to miss.
+- Add inline comments at protocol boundaries, unusual register maps, endian/bit packing, memory-ordering points, safe-state transitions, and hardware workarounds. Comments explain intent and evidence; they do not restate obvious syntax.
 - Avoid dynamic allocation after initialization. Any exception requires a bounded lifetime, failure path, fragmentation analysis, and tests.
 - Bound every loop, wait, retry, queue, parser, and hardware transaction. Timeouts must lead to a defined diagnostic and safe state.
 - Do not use `volatile` as a synchronization primitive. Shared ISR/main-context state needs an atomic operation, short critical section, or documented lock-free pattern.
@@ -57,10 +60,27 @@ Before regenerating from `Atlas.ioc`:
 - Use `assert` for programmer invariants in test/debug builds, not for recoverable hardware faults. Production faults must follow an explicit safe-state and diagnostic path.
 - Keep hardware register magic values tied to a named constant and a data-sheet or reference-manual citation in the code review description.
 
+### RTOS and concurrency rules
+
+- After `AtlasRtos_Start()`, `AtlasIO` is the sole owner of `AtlasBoard`, every device driver, and all HAL bus/transmit calls. Application/control code consumes snapshots and submits commands; it must not call a driver directly.
+- Prefer extending `AtlasRtosSnapshot`, the command queue, or a single-owner service over adding a shared driver mutex. Protect the complete semantic operation, not individual register/byte calls.
+- Every task, queue, mutex, semaphore, stream, and task stack must use static allocation. Adding a FreeRTOS heap source or enabling dynamic allocation requires an explicit architecture/safety review and is prohibited by the current baseline.
+- Assign priorities from measured deadlines and blocking behavior. Document each task’s owner, period/event source, maximum blocking time, stack allocation, heartbeat, and supervisor relationship.
+- Required tasks publish progress only after completing their required work. A skipped read, failed lock, or non-returning hook must not count as a healthy heartbeat.
+- Task waits use scheduler-aware blocking. Project runtime code must not call `HAL_Delay()` directly after scheduling starts or spin until a millisecond timeout; use `AtlasTime_DelayMs()` or a bounded RTOS wait.
+- Application hooks and command-completion hooks are nonblocking and driver-free. A queued command’s acceptance is distinct from its execution result.
+- The 100 Hz application snapshot/hook cycle must complete inside its 10 ms period. Any changed period requires a timing, watchdog, documentation, and bench-evidence review.
+- Required sensor validity and age are supervisor inputs, not merely application hints. New required data must define its source timestamp, maximum age, startup behavior, and fault bit.
+- Radio/BLE mode changes are maintenance-only. Publish an application-visible inhibit before blocking, enforce a non-renewable deadline, and bound post-maintenance sensor recovery; never chain operations to defer freshness indefinitely.
+- Current peripheral ISRs call no RTOS API. A future `...FromISR()` call requires a numerical NVIC priority from 5 through 15 under `NVIC_PRIORITYGROUP_4`, the documented wake/yield pattern, and a fresh interrupt-priority review.
+- Keep the project-owned SysTick wrapper: HAL time advances before the kernel tick. SVC/PendSV come from exactly one matching Cortex-M7 port. Never enable a second CubeMX/CMSIS-RTOS kernel layer.
+- Every required new task must add a liveness condition and stack high-water mark to watchdog supervision. A supervisor fault is monotonic until reset; later apparent recovery must not resume watchdog refresh.
+
 ## 5. Startup, watchdog, clocks, and memory
 
 - Establish safe GPIO output levels before changing pins to output or alternate-function mode. Event outputs default low; SPI chip selects default inactive; PWM channels remain disabled until an application command is validated.
-- The watchdog must be refreshed only by a health supervisor that has evidence all required tasks met their deadlines. Do not refresh it unconditionally in the main loop or an interrupt.
+- The watchdog must be refreshed only by a health supervisor that has evidence all required tasks met their deadlines and all required data remains valid/current. Do not refresh it unconditionally in an application loop or interrupt.
+- Initial stack sizes are hypotheses. Review compiler stack-usage output and record runtime high-water marks under worst-case Debug/Release traffic and fault paths before accepting or reducing them.
 - A clock change requires a documented clock tree and recalculation of flash latency, bus limits, timer frequencies, UART baud rates, I2C timing, SPI rates, ADC clocks, SDMMC, and the exact 48 MHz USB clock.
 - Verify the clock tree at runtime and with at least one independent timing measurement during bring-up.
 - DMA buffers must be placed in DMA-accessible memory and, when the data cache is enabled, follow a documented MPU or cache-maintenance policy with 32-byte cache-line alignment.
@@ -72,6 +92,9 @@ Before regenerating from `Atlas.ioc`:
 - Confirm each exact fitted part number, bus mode, address, reset behavior, startup delay, maximum clock, and identity register from current primary-vendor documentation.
 - Verify sensor axis transforms on assembled hardware. Placement-file rotation alone is not sufficient evidence.
 - Every driver needs explicit initialization, identity checking, configuration readback where available, timeout handling, health counters, and a defined failed/degraded state.
+- An acknowledgement means the device accepted a command, not necessarily that the intended state is active. Read back safety- or operation-critical configuration through the device's documented query/register path whenever available and reject missing, duplicate, malformed, or unequal values.
+- Ordinary boot must avoid nonvolatile writes to attached modules. APIs that save GNSS, radio, BLE, sensor, or other settings must be explicit, documented as persistent, and separated from volatile configuration.
+- A software state flag must not substitute for a physical mode transition. Command/data, boot, sleep, reset, and configuration-mode APIs must execute and verify the documented hardware/protocol transition.
 - Serialize access to shared buses and keep unrelated chip selects inactive.
 - Timestamp measurements from a monotonic hardware timebase. Serialized data formats must carry an explicit schema version, units, byte order, and integrity check.
 - Storage code must tolerate power loss. Define file creation, flush/sync policy, recovery, capacity limits, safe removal, and behavior when media is absent or corrupt.
@@ -93,6 +116,7 @@ Every functional pull request must provide evidence proportional to risk:
 - **Generated configuration:** Debug and Release builds, full generated diff review, linker-map review, and affected peripheral smoke tests.
 - **Driver or service:** unit tests where practical, fault-injection tests, timeout/recovery tests, and bench evidence on inert hardware.
 - **Timing or control:** measured rates, jitter, worst-case execution time, deadline behavior, and watchdog interaction.
+- **Task/RTOS change:** ownership/race review, priority and interrupt analysis, static-object/map review, queue-full and timeout tests, task-stall/deadline/stack fault injection, and measured high-water marks.
 - **Power or output behavior:** current-limited bench setup, safe-state checks across reset/fault paths, and a written test procedure approved before execution.
 - **Manufacturing change:** schematic/PCB revision alignment, ERC/DRC evidence, Gerber review, BOM/CPL review, polarity/orientation review, and an identified fabrication package.
 
@@ -101,6 +125,8 @@ Tests must report tool and hardware revisions, setup, inputs, expected result, o
 ## 9. Documentation and release discipline
 
 - Update `docs/PROJECT_STATUS.md` whenever implemented capability or a known blocker changes.
+- Give every fitted sensor, major communications module, and user-feedback output its own guide under `docs/modules/`. Each guide must identify hardware wiring, protocol/settings, startup sequence, public API, units/data format, health diagnostics, side effects/persistence, example use, known limits, primary manufacturer references, and a repeatable bench-acceptance procedure.
+- Keep `docs/VALIDATION.md` conservative: distinguish implemented, protocol-tested, target-built, bench-verified, and flight-qualified. Never promote a status without retained evidence.
 - Update `docs/HARDWARE_OVERVIEW.md` and `hardware/README.md` when the hardware revision or authoritative package changes.
 - Record exact dependency and generator versions for each release candidate.
 - Do not label a binary flight-ready, qualified, or safe without an approved requirements set, traceable verification evidence, and a release decision by the responsible project owner.
@@ -116,7 +142,7 @@ Tests must report tool and hardware revisions, setup, inputs, expected result, o
 - [ ] Linker-map and memory-placement effects are reviewed where applicable.
 - [ ] Automated and bench tests are documented with results.
 - [ ] Reset, timeout, fault, and safe-output behavior are covered where applicable.
+- [ ] RTOS ownership, priorities, interrupts, static allocation, heartbeats, stack margins, and watchdog gates are reviewed where applicable.
 - [ ] Documentation and revision identifiers are updated.
 - [ ] No secrets, personal absolute paths, build outputs, or unintended binaries are included.
 - [ ] Required reviewers have approved the change.
-

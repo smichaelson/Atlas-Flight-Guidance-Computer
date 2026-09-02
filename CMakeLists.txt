@@ -44,17 +44,45 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    App/Src/atlas_adxl375.c
+    App/Src/atlas_ble.c
+    App/Src/atlas_bno085.c
+    App/Src/atlas_board.c
+    App/Src/atlas_buzzer.c
+    App/Src/atlas_gnss.c
+    App/Src/atlas_led.c
+    App/Src/atlas_lsm6dsv16b.c
+    App/Src/atlas_mmc5983ma.c
+    App/Src/atlas_ms5611.c
+    App/Src/atlas_rfd900x.c
+    App/Src/atlas_rtos.c
+    App/Src/atlas_rtos_policy.c
+    App/Src/atlas_spi_device.c
+    App/Src/atlas_status.c
+    App/Src/atlas_time.c
+    App/Src/atlas_uart_transport.c
+    ThirdParty/CEVA/sh2/sh2.c
+    ThirdParty/CEVA/sh2/sh2_SensorValue.c
+    ThirdParty/CEVA/sh2/sh2_util.c
+    ThirdParty/CEVA/sh2/shtp.c
+    ThirdParty/FreeRTOS-Kernel/list.c
+    ThirdParty/FreeRTOS-Kernel/queue.c
+    ThirdParty/FreeRTOS-Kernel/stream_buffer.c
+    ThirdParty/FreeRTOS-Kernel/tasks.c
+    ThirdParty/FreeRTOS-Kernel/portable/GCC/ARM_CM7/r0p1/port.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
+    App/Inc
+    ThirdParty/CEVA/sh2
+    ThirdParty/FreeRTOS-Kernel/include
+    ThirdParty/FreeRTOS-Kernel/portable/GCC/ARM_CM7/r0p1
 )
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
+    ATLAS_USE_FREERTOS=1
 )
 
 # Remove wrong libob.a library dependency when using cpp files

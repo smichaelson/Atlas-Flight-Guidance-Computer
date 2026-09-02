@@ -44,11 +44,31 @@ The input path has no separate reverse-polarity protection stage ahead of `VIN_R
 
 Sensor coordinate frames have not been established in the firmware. Derive and bench-verify a versioned transform for each fitted sensor before navigation or control use.
 
+## Firmware interface contract
+
+This table records the Rev. 0.1 connection used by the project-owned drivers. It is a review aid; the schematic and measured board remain authoritative.
+
+| System | MCU connection | Reviewed firmware default | Guide |
+|---|---|---|---|
+| ADXL375 U1 | SPI2 mode 3, `CS_ADXL375` on PG12; board-specific MOSI gate | 3.125 MHz nominal SPI, 4-wire/right-justified, 400 Hz, measurement mode | [ADXL375](modules/ADXL375.md) |
+| MMC5983MA U9 | SPI2 mode 3, `CS_MMC5983` on PG11 | 3.125 MHz nominal SPI, 200 Hz bandwidth code, on-demand conversion | [MMC5983MA](modules/MMC5983MA.md) |
+| LSM6DSV16B U27 | SPI3 mode 3, CS on PG10, INT1 on PG2 | 3.125 MHz nominal SPI, 240 Hz, +/-16 g, +/-2000 dps, accel/gyro DRDY on INT1 | [LSM6DSV16B](modules/LSM6DSV16B.md) |
+| BNO085 U12 | I2C1 address `0x4B`, reset PB13, active-low interrupt PG0 | Product-ID probe; accel, calibrated gyro, and rotation vector at 100 Hz; calibrated magnetic field at 50 Hz | [BNO085](modules/BNO085.md) |
+| MS5611 U14 | I2C1 address `0x77` | Reset, all PROM words read, CRC-4 required; on-demand conversion | [MS5611](modules/MS5611.md) |
+| NEO-M9N U23 | USART1 PB14/PB15; TIMEPULSE on PA15 / TIM2 CH1 | 38400 8N1 host baseline; RAM-only 10 Hz NAV-PVT; UBX enabled; NMEA disabled; exact key readback | [GNSS](modules/GNSS.md) |
+| NINA-B112 U21 | USART6 with RTS/CTS plus reset, SWITCH1/2, DSR control, and DTR status | 115200 8N1 RTS/CTS; normal boot; identity-only during board startup | [BLE](modules/BLE.md) |
+| External RFD900x J9 | USART3 and direct `5V_SYS` power | 115200 8N1 host baseline; transparent transport only during startup | [RFD900x](modules/RFD900X.md) |
+| RGB LED | PB6 red, PB7 green, PD14 blue transistor gates | Active high; blue during startup, green if all startup steps pass, yellow otherwise | [LED](modules/LED.md) |
+| Buzzer | PE5 TIM15 CH1, PE6 TIM15 CH2 | Stopped; runtime driver configures opposite-phase 4.8 kHz PWM when requested | [Buzzer](modules/BUZZER.md) |
+
+The generated UARTs use interrupt reception without DMA. SPI2 and SPI3 are configured for mode 3 with a prescaler of 16; under the reviewed 50 MHz kernel this is approximately 3.125 MHz. Confirm clocks from the compiled image and a logic-analyzer capture after any generated configuration change.
+
 ## Navigation, communications, and storage
 
 - **GNSS:** NEO-M9N on `3V3_AUX`, UART data, and `TIMEPULSE` routed to a timer input-capture pin. J27 is the external SMA antenna path.
 - **BLE:** NINA-B112-05B with UART hardware-flow-control signals, module reset/switch lines, and test points.
 - **Long-range radio:** J9 provides direct `5V_SYS`, ground, and 3.3 V UART for an external RFD900x. It is not behind either 0.53 A accessory-port limiter; account for roughly 1 A peak transmit demand at maximum radio power.
+- **Radio terminology:** RFD900x is a SiK frequency-hopping serial modem. The board does not contain a Semtech LoRa transceiver, and the firmware must not call this interface LoRa when protocol compatibility matters.
 - **microSD:** Four-bit SDMMC socket with card detect and ESD protection.
 - **USB-C:** USB 2.0 full-speed device connection with CC pull-downs, VBUS sensing divider, and ESD protection.
 - **Expansion:** External UART, I2C2, SPI3, SWD/reset, seven general inputs, and seven general outputs.
@@ -83,4 +103,3 @@ Calibrate divider ratios, ADC reference, offsets, and thresholds on assembled ha
 - [`../hardware/manufacturing/`](../hardware/manufacturing/README.md): candidate Gerber, drill, JLCPCB BOM, and placement package.
 
 Raw `.kicad_sch`, `.kicad_pcb`, and `.kicad_pro` files are intentionally absent. Hardware design changes require the canonical editable KiCad project from its owner; do not reconstruct an authoritative design from the PDF or Gerbers.
-

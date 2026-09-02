@@ -20,6 +20,9 @@ Describe the problem, the chosen solution, and why this change belongs now.
 - [ ] Automated tests added or updated
 - [ ] Bench test procedure and results attached
 - [ ] Reset, timeout, and fault paths exercised where applicable
+- [ ] RTOS ownership, task priorities, interrupt/API rules, queue/stream bounds, heartbeats, and stack margins reviewed where applicable
+- [ ] Required-sensor age limits, application deadline, maintenance inhibit/recovery, and watchdog fault latching reviewed where applicable
+- [ ] No application/new task calls a hardware driver after scheduler start
 
 List exact tool versions, hardware revision, setup, expected result, observed result, and retained logs/screenshots/data:
 
@@ -28,6 +31,7 @@ List exact tool versions, hardware revision, setup, expected result, observed re
 - [ ] No generated files changed
 - [ ] Or: CubeMX version/package recorded and full generated diff reviewed
 - [ ] GPIO reset levels, clocks, NVIC, DMA, linker inputs, and build membership reviewed
+- [ ] FreeRTOS source/port membership, SysTick/SVC/PendSV integration, and `ATLAS_USE_FREERTOS` preserved
 
 ## Documentation and repository hygiene
 
@@ -44,4 +48,3 @@ State known limitations, assumptions, follow-up issues, and rollback/recovery be
 
 - [ ] One reviewer is sufficient
 - [ ] Two qualified reviewers required because this affects power, clocks, memory, interrupts, watchdogs, actuators, event outputs, boot, or fault handling
-

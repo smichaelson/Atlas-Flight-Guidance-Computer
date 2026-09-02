@@ -3,6 +3,11 @@
   ******************************************************************************
   * @file           : main.c
   * @brief          : Main program body
+  *
+  * Major Atlas integration functions:
+  * - main(): initializes generated peripherals and Atlas hardware, starts IWDG,
+  *   then transfers driver ownership and watchdog supervision to static FreeRTOS tasks.
+  * - Error_Handler(): enters the generated fail-stop path after fatal HAL failures.
   ******************************************************************************
   * @attention
   *
@@ -22,7 +27,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "atlas_board.h"
+#include "atlas_rtos.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -77,7 +83,9 @@ UART_HandleTypeDef huart3;
 UART_HandleTypeDef huart6;
 
 /* USER CODE BEGIN PV */
-
+static AtlasBoard atlas_board;
+static volatile AtlasStatus atlas_board_startup_status;
+static volatile AtlasStatus atlas_rtos_start_status;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -108,7 +116,10 @@ static void MX_RAMECC_Init(void);
 static void MX_RTC_Init(void);
 static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
-
+#if defined(__GNUC__)
+/* FatFs initializes SDMMC lazily through BSP_SD_Init(); CubeMX still emits this helper. */
+static void MX_SDMMC1_SD_Init(void) __attribute__((unused));
+#endif
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -173,13 +184,33 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USART6_UART_Init();
   MX_ADC3_Init();
-  MX_IWDG1_Init();
   MX_RAMECC_Init();
   MX_RTC_Init();
   MX_TIM6_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
+  {
+    const AtlasBoardHardware hardware = {
+      .sensor_i2c = &hi2c1,
+      .shared_sensor_spi = &hspi2,
+      .imu_spi = &hspi3,
+      .gnss_uart = &huart1,
+      .radio_uart = &huart3,
+      .ble_uart = &huart6,
+      .microsecond_pps_timer = &htim2,
+      .buzzer_timer = &htim15
+    };
+    atlas_board_startup_status = AtlasBoard_Init(&atlas_board, &hardware);
+  }
 
+  /* Start the watchdog only after bounded module probes that can take several seconds. */
+  MX_IWDG1_Init();
+  atlas_rtos_start_status = AtlasRtos_Start(&atlas_board,
+                                             &hiwdg1,
+                                             atlas_board_startup_status);
+  /* A healthy scheduler never returns. Preserve the failure for a debugger. */
+  (void)atlas_rtos_start_status;
+  Error_Handler();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -189,6 +220,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Unreachable unless Error_Handler() is replaced during a debug experiment. */
+    __WFI();
   }
   /* USER CODE END 3 */
 }
