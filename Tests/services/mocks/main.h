@@ -32,7 +32,8 @@ struct DMA_HandleTypeDef {
 };
 typedef struct { uint32_t ISR, raw, selected_channel; } ADC_TypeDef;
 typedef struct { ADC_TypeDef *Instance; DMA_HandleTypeDef *DMA_Handle;
-    struct { uint32_t ScanConvMode,NbrOfConversion,EOCSelection; } Init; } ADC_HandleTypeDef;
+    struct { uint32_t ScanConvMode,NbrOfConversion,EOCSelection; } Init;
+    uint32_t ErrorCode; } ADC_HandleTypeDef;
 typedef struct { uint32_t Channel,Rank,SamplingTime,SingleDiff,OffsetNumber; } ADC_ChannelConfTypeDef;
 typedef struct { uint32_t FADD; } RAMECC_MonitorTypeDef;
 typedef struct { RAMECC_MonitorTypeDef *Instance; uint32_t RAMECCErrorCode; } RAMECC_HandleTypeDef;
@@ -150,6 +151,8 @@ void TestSetPrimask(uint32_t mask);
 #define CS_SPI_EXT_GPIO_Port GPIOG
 #define CS_LSM6DSV16B_Pin (1U<<10)
 #define CS_LSM6DSV16B_GPIO_Port GPIOG
+#define BNO085_H_INTN_Pin (1U<<0)
+#define BNO085_H_INTN_GPIO_Port GPIOG
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *spi,uint8_t *tx,uint8_t *rx,uint16_t size,uint32_t timeout);
 HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *i2c,uint16_t address,uint8_t *data,uint16_t size,uint32_t timeout);
 HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *i2c,uint16_t address,uint8_t *data,uint16_t size,uint32_t timeout);

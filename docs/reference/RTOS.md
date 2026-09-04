@@ -6,7 +6,7 @@ Unless explicitly stated, sections below describe the **normal Debug/Release** p
 
 ## Diagnostic profile
 
-`ATLAS_BRINGUP=1` selects `AtlasBringup_Start()` instead of `AtlasRtos_Start()`. Board initialization prepares indicators and NOT_READY reports; `AtlasBoard_ProbeModule()` runs only in the diagnostic sensor owner, once per device per boot. The control hook/normal sensor-health supervisor are not started. `AtlasRtos_OutputsPermitted()` always returns false, and the output command boundary independently rejects configuration/PWM/pyro assertions. This is not a runtime bypass of normal flight supervision.
+`ATLAS_BRINGUP=1` selects `AtlasBringup_Start()` instead of `AtlasRtos_Start()`. Board initialization forces the defective RGB interface low and prepares NOT_READY reports. `AtlasBoard_ProbeModule()` runs only in the diagnostic sensor owner; ordinary devices are once per boot, while a failed GNSS permits one deliberate command at a time to retry identity or only its failed volatile configuration. The control hook/normal sensor-health supervisor are not started. `AtlasRtos_OutputsPermitted()` always returns false, and the output command boundary independently rejects configuration/PWM/pyro assertions. This is not a runtime bypass of normal flight supervision.
 
 | Task | Priority | Stack words | Diagnostic ownership |
 |---|---:|---:|---|
@@ -14,7 +14,7 @@ Unless explicitly stated, sections below describe the **normal Debug/Release** p
 | AtlasBenchWatch | 5 | 512 | 100 ms progress/deadline/stack supervision and IWDG refresh |
 | AtlasBenchUSB | 3 | 2048 | Strict parser, one pending command, escaped/bounded JSON and service-result routing |
 | AtlasUSB | 2 | 1024 | Existing VBUS/CDC owner and copied transport |
-| AtlasBenchIO | 1 | 2048 | Sole sensor/link/expansion/indicator owner; worker commands and latest samples |
+| AtlasBenchIO | 1 | 2048 | Sole sensor/link/expansion/buzzer owner; enforces RGB low; worker commands and latest samples |
 | AtlasStorage | 1 | 2048 | Existing filesystem/RTC owner; no boot mount; explicit create-new self-test |
 | Idle | 0 | 256 | Kernel idle work |
 
@@ -46,13 +46,13 @@ Per-argument data tags are in the [RTOS](../../App/Inc/atlas_rtos.h), [policy](.
 
 Project-owned `App/` sits above generated HAL/pin/clock configuration. BNO085 uses the pinned CEVA SH-2/SHTP library through the Atlas I2C/reset/time adapter. FreeRTOS is manually integrated; do not generate a second kernel or CMSIS wrapper.
 
-Before scheduling, startup attempts LED/buzzer setup, four discrete sensors, BNO085 identity/four reports, GNSS identity/RAM configuration, RFD900x transport and BLE identity. Each stage has an `atlas_board.init` result; the first failure is the aggregate. No module settings are saved automatically.
+Before scheduling, startup forces the hardware-inhibited RGB nets low, initializes the buzzer, and in normal builds attempts four discrete sensors, BNO085 identity/four reports, GNSS identity/RAM configuration, RFD900x transport and BLE identity. Each stage has an `atlas_board.init` result; the first failure is the aggregate. No module settings are saved automatically.
 
-BNO085 and GNSS use `AtlasTime_StartCounter()` for TIM2. A running BUSY/CEN handle is accepted without restart or counter reset; a stopped BUSY handle is rejected. GNSS capture remains separate from base-counter ownership.
+BNO085 and GNSS use `AtlasTime_StartCounter()` for TIM2. A running BUSY/CEN handle is accepted without restart or counter reset; a stopped BUSY handle is rejected. GNSS first aborts/flushes stale USART RX, arms reception with one bounded race retry, and proves `MON-VER` before starting channel-1 capture. BNO085 I2C traffic uses one newly asserted H_INTN per header/continuation phase; on a terminal transfer failure U12 is held reset before I2C1 and its filters are restored for the shared MS5611.
 
 `main()` starts IWDG1 after board probes. `AtlasRtos_Start()` validates priority group 4, creates static queues/tasks and initializes the output/ADC/expansion owners before starting FreeRTOS. SD media and USB enumeration occur later in their tasks. A failed board probe is retained and later faults supervision; failure to create required resources returns to fail-stop. Early failures before IWDG starts are not covered by that later watchdog.
 
-Logical LED colors report startup only; [physical green/blue mapping](HARDWARE.md#led-mapping-conflict) is unresolved.
+There are no commanded startup colors. The confirmed [rev-0.1 RGB hardware defect](HARDWARE.md#rgb-led-hardware-defect-and-mandatory-inhibit) requires PB6/PB7/PD14 low; normal and diagnostic APIs reject every nonzero mask as unsupported.
 
 ## Tasks and ownership
 
@@ -74,7 +74,7 @@ SPI2 and I2C1 sensor operations, SPI3 IMU/external CS operations and UART mode/p
 
 | Path | Requested work | Baseline freshness |
 |---|---|---:|
-| Board service | UART recovery, BNO085 bounded SHTP reads, GNSS parse and buzzer expiry each cycle | Errors latch |
+| Board service | UART recovery, BNO085 bounded edge-gated SHTP phases, GNSS parse and buzzer expiry each cycle | Errors latch |
 | ADXL375 | Due every 2 ms, device ODR 400 Hz | 50 ms |
 | LSM6DSV16B | Coalesced INT1 or 5 ms fallback; accel + gyro ready; device ODR 240 Hz | 50 ms |
 | MMC5983MA | On-demand field due every 50 ms | 250 ms |
@@ -107,7 +107,7 @@ Raw bytes are not commands. An application protocol must define version/type/len
 
 The main queue holds eight copied requests and executes at most one per eligible I/O cycle:
 
-- LED color; buzzer beep/stop.
+- LED off only (nonzero colors are hardware-inhibited); buzzer beep/stop.
 - RFD900x/BLE data: 1–64 bytes, explicit UART timeout 1–10 ms.
 - Explicit radio/BLE command/data-mode transitions.
 - RFD900x identity/settings query, parameter update with persistence flag, or host baud change.

@@ -101,6 +101,10 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
     {
         if (!bench_number(token[2], &parsed.argument[0]) || parsed.argument[0] > 7U)
             return false;
+        /* Rev-0.1 RGB output is hardware-inhibited; retain only the explicit
+         * fail-dark request in the wire allowlist. */
+        if (strcmp(token[1], "led") == 0 && parsed.argument[0] != 0U)
+            return false;
         parsed.operation = strcmp(token[1], "led") == 0 ? ATLAS_BENCH_LED : ATLAS_BENCH_GPIO;
         /* GPIO zero is unconditional deassertion of all seven logic outputs. */
         *command = parsed;

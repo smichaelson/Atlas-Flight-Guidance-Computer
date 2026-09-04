@@ -20,6 +20,21 @@ $allFiles = @(Get-ChildItem -LiteralPath $repositoryRoot -Recurse -File |
     Where-Object { $_.FullName -notmatch $excludedDirectoryPattern })
 $failures = [System.Collections.Generic.List[string]]::new()
 
+function Get-RepositoryRelativePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # System.IO.Path.GetRelativePath is unavailable in the Windows PowerShell
+    # 5.1/.NET Framework environment shipped with many STM32CubeIDE systems.
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $rootPrefix = $repositoryRoot.TrimEnd([char[]]@('\', '/')) +
+        [System.IO.Path]::DirectorySeparatorChar
+    if ($fullPath.StartsWith($rootPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $fullPath.Substring($rootPrefix.Length)
+    }
+    return $fullPath
+}
+
 $requiredPaths = @(
     "README.md",
     "CMakeLists.txt",
@@ -118,11 +133,11 @@ $projectSources = @($projectSourceDirectories | ForEach-Object {
         Where-Object { $_.Extension -in ".c", ".h" }
 })
 foreach ($file in $projectSources) {
-    $content = Get-Content -LiteralPath $file.FullName -Raw
+    $content = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
     # Inspect kernel API naming, not project adapters such as BSP_SD_DetectFromISR
     # (which only records a media-generation edge and calls no kernel function).
     if ($content -match '\b(?:[xv]|ux|ul)[A-Z][A-Za-z0-9_]*FromISR\s*\(|\bport(?:YIELD_FROM_ISR|END_SWITCHING_ISR)\s*\(') {
-        $relativeFile = [System.IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
+        $relativeFile = Get-RepositoryRelativePath -Path $file.FullName
         $failures.Add("ISR-to-FreeRTOS API requires a fresh priority audit: $relativeFile")
     }
 }
@@ -132,10 +147,10 @@ foreach ($file in (Get-ChildItem -LiteralPath $appSourceDirectory -File -Filter 
     if ($file.Name -eq "atlas_time.c") {
         continue
     }
-    if ((Get-Content -LiteralPath $file.FullName -Raw) -match '\bHAL_Delay\s*\(') {
+    if ((Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8) -match '\bHAL_Delay\s*\(') {
         $failures.Add("Post-start-capable App driver bypasses AtlasTime_DelayMs(): $($file.Name)")
     }
-    if ((Get-Content -LiteralPath $file.FullName -Raw) -match '\b(?:malloc|calloc|realloc|free|[svf]*printf|[svf]*scanf)\s*\(') {
+    if ((Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8) -match '\b(?:malloc|calloc|realloc|free|[svf]*printf|[svf]*scanf)\s*\(') {
         $failures.Add("App source introduces allocation or libc formatted I/O; review static-memory contract: $($file.Name)")
     }
 }
@@ -143,8 +158,8 @@ foreach ($file in (Get-ChildItem -LiteralPath $appSourceDirectory -File -Filter 
 $cmakePath = Join-Path $repositoryRoot "CMakeLists.txt"
 $iarPath = Join-Path $repositoryRoot "EWARM\Atlas.ewp"
 if ((Test-Path -LiteralPath $cmakePath) -and (Test-Path -LiteralPath $iarPath)) {
-    $cmake = (Get-Content -LiteralPath $cmakePath -Raw).Replace('\', '/')
-    $iar = (Get-Content -LiteralPath $iarPath -Raw).Replace('\', '/')
+    $cmake = (Get-Content -LiteralPath $cmakePath -Raw -Encoding UTF8).Replace('\', '/')
+    $iar = (Get-Content -LiteralPath $iarPath -Raw -Encoding UTF8).Replace('\', '/')
     $appSources = @(Get-ChildItem -LiteralPath $appSourceDirectory -File -Filter "*.c")
     foreach ($file in $appSources) {
         $cmakeNeedle = "App/Src/$($file.Name)"
@@ -193,7 +208,7 @@ if ((Test-Path -LiteralPath $cmakePath) -and (Test-Path -LiteralPath $iarPath)) 
     }
 
     try {
-        [xml]$iarXml = Get-Content -LiteralPath $iarPath -Raw
+        [xml]$iarXml = Get-Content -LiteralPath $iarPath -Raw -Encoding UTF8
         $iarProjectDirectory = Split-Path -Parent $iarPath
         foreach ($node in $iarXml.SelectNodes('//file/name')) {
             $expanded = $node.InnerText.Replace('$PROJ_DIR$', $iarProjectDirectory)
@@ -209,9 +224,9 @@ if ((Test-Path -LiteralPath $cmakePath) -and (Test-Path -LiteralPath $iarPath)) 
 }
 
 # The main-stack guard is a cross-file contract, not just a map-review note.
-$gnuLayout = Get-Content -LiteralPath (Join-Path $repositoryRoot 'STM32H743XX_FLASH.ld') -Raw
-$iarLayout = Get-Content -LiteralPath (Join-Path $repositoryRoot 'EWARM\stm32h743xx_flash.icf') -Raw
-$mainStartup = Get-Content -LiteralPath (Join-Path $repositoryRoot 'Core\Src\main.c') -Raw
+$gnuLayout = Get-Content -LiteralPath (Join-Path $repositoryRoot 'STM32H743XX_FLASH.ld') -Raw -Encoding UTF8
+$iarLayout = Get-Content -LiteralPath (Join-Path $repositoryRoot 'EWARM\stm32h743xx_flash.icf') -Raw -Encoding UTF8
+$mainStartup = Get-Content -LiteralPath (Join-Path $repositoryRoot 'Core\Src\main.c') -Raw -Encoding UTF8
 $stackContracts = @(
     @{ Name = 'GNU fixed MSP assertion'; Text = $gnuLayout; Pattern = 'ASSERT\(_sstack\s*==\s*0x2001C000' },
     @{ Name = 'GNU data/guard exclusion'; Text = $gnuLayout; Pattern = 'ASSERT\(_ebss\s*\+\s*_Min_Heap_Size\s*<=\s*__atlas_msp_guard_start__' },
@@ -304,7 +319,7 @@ $checkedAnchorCount = 0
 $linkPattern = [regex]'!?\[[^\]]*\]\((?<target>[^)]+)\)'
 foreach ($file in $markdownFiles) {
     $content = Get-MarkdownWithoutFences -Content (
-        Get-Content -LiteralPath $file.FullName -Raw)
+        Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8)
     foreach ($match in $linkPattern.Matches($content)) {
         $target = $match.Groups["target"].Value.Trim().Trim('<', '>')
         if (($target -eq "") -or ($target -match '^(?:https?://|mailto:)')) {
@@ -320,7 +335,7 @@ foreach ($file in $markdownFiles) {
                 (Join-Path $file.DirectoryName $localTarget))
         }
         ++$checkedLocalLinkCount
-        $relativeFile = [System.IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
+        $relativeFile = Get-RepositoryRelativePath -Path $file.FullName
         if (-not (Test-Path -LiteralPath $resolvedTarget)) {
             $failures.Add("Broken local Markdown link in ${relativeFile}: $target")
             continue
@@ -330,7 +345,7 @@ foreach ($file in $markdownFiles) {
             ++$checkedAnchorCount
             if (-not $anchorCache.ContainsKey($resolvedTarget)) {
                 $anchorCache[$resolvedTarget] = Get-MarkdownAnchorSet -Content (
-                    Get-Content -LiteralPath $resolvedTarget -Raw)
+                    Get-Content -LiteralPath $resolvedTarget -Raw -Encoding UTF8)
             }
             $fragment = [Uri]::UnescapeDataString($parts[1])
             if (-not $anchorCache[$resolvedTarget].Contains($fragment)) {
@@ -343,10 +358,10 @@ foreach ($file in $markdownFiles) {
 $appFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot "App") -Recurse -File |
     Where-Object { $_.Extension -in ".c", ".h" })
 foreach ($file in $appFiles) {
-    $content = Get-Content -LiteralPath $file.FullName -Raw
+    $content = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
     $escapedName = [regex]::Escape($file.Name)
     if ($content -notmatch "(?s)^/\*\*.*?@file\s+$escapedName.*?Major functions") {
-        $relativeFile = [System.IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
+        $relativeFile = Get-RepositoryRelativePath -Path $file.FullName
         $failures.Add("Missing Doxygen file/major-functions header: $relativeFile")
     }
 }
@@ -355,7 +370,7 @@ foreach ($file in $appFiles) {
 # make the implementation navigable without duplicating a full C parser here.
 $definitionPattern = '^(?<storage>(?:static|__weak)\s+)?(?:const\s+)?(?<type>void|bool|char|size_t|TickType_t|BaseType_t|UBaseType_t|u?int(?:8|16|32|64)_t|int(?:8|16|32|64)_t|int|float|double|Atlas[A-Za-z0-9_]+|HAL_StatusTypeDef|FRESULT|sh2_Hal_t)\s*(?<pointer>\*+)?\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\('
 foreach ($file in ($appFiles | Where-Object { $_.Extension -eq ".c" })) {
-    $lines = @(Get-Content -LiteralPath $file.FullName)
+    $lines = @(Get-Content -LiteralPath $file.FullName -Encoding UTF8)
     for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
         $definition = [regex]::Match($lines[$lineIndex], $definitionPattern)
         if (-not $definition.Success) {

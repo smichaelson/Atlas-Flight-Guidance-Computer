@@ -156,6 +156,7 @@ int main(void)
     bench_hello();
     fputs(tx, stdout);
     test_usb = (AtlasUsbHealth){.configured = true, .dtr = true, .session = 1U};
+    published.led_inhibited = 1U;
     published.sensors.adxl375_status = published.sensors.lsm6dsv16b_status =
         published.sensors.mmc5983ma_status = published.sensors.ms5611_status =
             ATLAS_ERROR_NOT_READY;

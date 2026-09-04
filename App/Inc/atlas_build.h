@@ -12,5 +12,5 @@
 #if ATLAS_BRINGUP != 0 && ATLAS_BRINGUP != 1
 #error "ATLAS_BRINGUP must be exactly 0 or 1"
 #endif
-#define ATLAS_BRINGUP_VERSION "1.0.0"
+#define ATLAS_BRINGUP_VERSION "1.0.2"
 #endif

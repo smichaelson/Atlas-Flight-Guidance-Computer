@@ -6,6 +6,7 @@
  * - AtlasGnss_Init(): starts UART reception and proves identity with UBX-MON-VER.
  * - AtlasGnss_ConfigureRam(): configures rate and UART1 messages without writing flash.
  * - AtlasGnss_Service(): validates UBX frames and decodes UBX-NAV-PVT.
+ * - AtlasGnssFailureStage: identifies the exact startup/configuration phase that failed.
  * - AtlasGnss_GetPps(): snapshots ISR-owned timing state coherently.
  * - AtlasGnss_OnPpsCapture(): timestamps the GNSS time-pulse edge in ISR context.
  */
@@ -76,6 +77,22 @@ typedef struct
     volatile bool valid_period;
 } AtlasGnssPps;
 
+/** @brief Bounded GNSS startup/configuration stage retained after a failure. */
+typedef enum
+{
+    ATLAS_GNSS_FAILURE_NONE = 0,
+    ATLAS_GNSS_FAILURE_TRANSPORT_INIT,
+    ATLAS_GNSS_FAILURE_TRANSPORT_START,
+    ATLAS_GNSS_FAILURE_MON_VER_WRITE,
+    ATLAS_GNSS_FAILURE_MON_VER_SERVICE,
+    ATLAS_GNSS_FAILURE_MON_VER_TIMEOUT,
+    ATLAS_GNSS_FAILURE_TIMEBASE_START,
+    ATLAS_GNSS_FAILURE_PPS_CAPTURE_START,
+    ATLAS_GNSS_FAILURE_CONFIGURATION_WRITE,
+    ATLAS_GNSS_FAILURE_CONFIGURATION_READBACK,
+    ATLAS_GNSS_FAILURE_RUNTIME_SERVICE
+} AtlasGnssFailureStage;
+
 /** @brief GNSS parser and transport diagnostics. */
 typedef struct
 {
@@ -92,6 +109,10 @@ typedef struct
     uint32_t command_timeouts;
     uint32_t configuration_readbacks;
     uint32_t configuration_mismatches;
+    uint32_t last_uart_error;
+    AtlasGnssFailureStage last_failure_stage;
+    AtlasStatus last_failure_status;
+    bool pps_capture_started;
 } AtlasGnssHealth;
 
 /** @brief Internal UBX byte parser state. */
@@ -149,12 +170,15 @@ typedef struct
 } AtlasGnss;
 
 /**
- * @brief Start the NEO-M9N transport/PPS capture and prove UBX communication.
+ * @brief Clear stale USART RX state, prove NEO-M9N UBX identity, then start PPS capture.
  * @param gnss Destination driver instance.
  * @param transport Initialized transport object to bind to USART1.
  * @param uart Initialized USART1 at the receiver's current baud (factory 38400).
  * @param pps_timer TIM2 configured for 1 MHz input capture channel 1.
- * @return ATLAS_OK or a typed transport, timeout, or identity failure.
+ * @return ATLAS_OK or a typed transport, timer, or identity failure.
+ * @note The receive preflight is required for staged bring-up because the receiver
+ *       emits NMEA before this function is called and can otherwise leave USART1
+ *       with a pending overrun that makes STM32 ReceiveToIdle arming fail.
  */
 AtlasStatus AtlasGnss_Init(AtlasGnss *gnss,
                            AtlasUartTransport *transport,

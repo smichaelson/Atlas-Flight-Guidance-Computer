@@ -900,6 +900,10 @@ static void getProdIdRx(sh2_t *pSh2, const uint8_t *payload, uint16_t len)
 const sh2_Op_t getProdIdOp = {
     .start = getProdIdStart,
     .rx = getProdIdRx,
+    /* Atlas integration patch: a lost response or failed HAL must not trap
+     * pre-scheduler board initialization forever. Other project-used SH-2
+     * operations either complete in start() or have driver-level bounds. */
+    .timeout_us = 5000000,
 };
 
 // ------------------------------------------------------------------------

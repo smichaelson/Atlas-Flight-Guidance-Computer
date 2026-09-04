@@ -84,7 +84,7 @@ static AtlasStatus atlas_board_enable_bno_reports(AtlasBoard *board)
 }
 
 /**
- * @brief Prepare indicators and reports; normal builds also probe all sensor/modules.
+ * @brief Prepare fail-dark outputs and reports; normal builds also probe all modules.
  * @param board Destination board instance.
  * @param hardware Initialized HAL handles matching the schematic.
  * @return ATLAS_OK when every required check passes, otherwise the first failure.
@@ -117,10 +117,6 @@ AtlasStatus AtlasBoard_Init(AtlasBoard *board, const AtlasBoardHardware *hardwar
 
     board->init.led = AtlasLed_Init(&board->led);
     overall = atlas_board_accumulate(overall, board->init.led);
-    if (board->init.led == ATLAS_OK)
-    {
-        (void)AtlasLed_SetColor(&board->led, ATLAS_LED_BLUE);
-    }
 
     board->init.buzzer = AtlasBuzzer_Init(&board->buzzer,
                                            hardware->buzzer_timer);
@@ -135,26 +131,47 @@ AtlasStatus AtlasBoard_Init(AtlasBoard *board, const AtlasBoardHardware *hardwar
     for (size_t i = 0U; i < sizeof(order) / sizeof(order[0]); ++i)
         overall = atlas_board_accumulate(overall, AtlasBoard_ProbeModule(board, order[i]));
 #endif
-    if (board->led.initialized)
-    {
-        (void)AtlasLed_SetColor(&board->led,
-                                (overall == ATLAS_OK) ?
-                                ATLAS_LED_GREEN : ATLAS_LED_YELLOW);
-    }
+    /* Rev-0.1 Q6-Q8 are hardware-inhibited. Retain all three nets low instead
+     * of using the former blue/startup-result color indications. */
+    AtlasLed_Off(&board->led);
     return overall;
 }
 
-/** @brief Probe one subsystem without retrying partially initialized drivers.
+/** @brief Probe one subsystem; permit only bounded, state-aware GNSS recovery.
  * @param board Prepared board, exclusively owned by caller. @param module Subsystem.
- * @return Retained startup outcome; repeats are rejected until a fresh MCU boot. */
+ * @return Retained startup outcome; ordinary repeats return ATLAS_ERROR_STATE.
+ * @note A failed GNSS transport/identity probe may restart from a flushed USART;
+ *       a GNSS with proven identity may retry only its volatile configuration. */
 AtlasStatus AtlasBoard_ProbeModule(AtlasBoard *board, AtlasBoardModule module)
 {
     if (board == NULL) return ATLAS_ERROR_NULL;
     if (!board->init_complete) return ATLAS_ERROR_NOT_READY;
     if ((unsigned)module >= ATLAS_BOARD_MODULE_COUNT) return ATLAS_ERROR_ARGUMENT;
     const uint32_t bit = 1UL << (unsigned)module;
-    if ((board->attempted_modules & bit) != 0U) return ATLAS_ERROR_STATE;
-    board->attempted_modules |= bit; /* Failure is an attempt too; no hidden retry. */
+    if ((board->attempted_modules & bit) != 0U)
+    {
+        if (module != ATLAS_BOARD_GNSS) return ATLAS_ERROR_STATE;
+        if ((board->init.gnss == ATLAS_OK) &&
+            (board->init.gnss_ram_configuration == ATLAS_OK))
+            return ATLAS_ERROR_STATE;
+        if (board->init.gnss == ATLAS_OK)
+        {
+            board->init.gnss_ram_configuration =
+                AtlasGnss_ConfigureRam(&board->gnss, 100U, true);
+            return board->init.gnss_ram_configuration;
+        }
+        /* Quiesce the old interrupt receiver before AtlasGnss_Init() clears the
+         * registered transport object. The next start performs its own RX flush. */
+        const AtlasStatus stop = AtlasUartTransport_Stop(&board->gnss_transport);
+        if (stop != ATLAS_OK)
+        {
+            board->init.gnss = stop;
+            return stop;
+        }
+        /* Init did not complete. A deliberate operator command may now make one
+         * fresh identity attempt without racing a callback into cleared state. */
+    }
+    board->attempted_modules |= bit;
     const AtlasBoardHardware *hardware = &board->hardware;
     switch (module)
     {
@@ -183,6 +200,7 @@ AtlasStatus AtlasBoard_ProbeModule(AtlasBoard *board, AtlasBoardModule module)
                 atlas_board_enable_bno_reports(board) : ATLAS_ERROR_NOT_READY;
             return atlas_board_accumulate(board->init.bno085, board->init.bno085_default_reports);
         case ATLAS_BOARD_GNSS:
+            board->init.gnss_ram_configuration = ATLAS_ERROR_NOT_READY;
             board->init.gnss = AtlasGnss_Init(&board->gnss, &board->gnss_transport,
                 hardware->gnss_uart, hardware->microsecond_pps_timer);
             board->init.gnss_ram_configuration = board->init.gnss == ATLAS_OK ?

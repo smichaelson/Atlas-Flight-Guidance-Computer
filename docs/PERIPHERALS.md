@@ -105,6 +105,8 @@ size_t AtlasExample_ReadUsb(uint8_t bytes[64])
 
 `AtlasOutputs` calibrates ADC1/ADC3 and runs a nominal 5 ms service loop. ADC1 has ten 16-bit ranks in DMA1-accessible AXI SRAM. Only a completed, stopped DMA scan is decoded; failures quarantine that buffer and inhibit outputs. ADC3 explicitly samples VREFINT then temperature as separate single-rank conversions, avoiding overwritten data-register values.
 
+`AtlasIoSnapshot` retains the first ADC3 reference failure as a typed stage (configure, start, overrun, deadline, poll, stop, raw range, VDDA range, or temperature range), the selected channel, raw value, HAL status, and ADC error mask. This diagnostic record is separate from `adc_errors`, which counts external ADC1/DMA scan faults. It is evidence for diagnosis, not permission to accept a rail or bypass fail-closed output inhibition.
+
 | ADC index | Meaning | Nominal divider multiplier |
 |---:|---|---:|
 | 0 | 3V3 system rail | 2 |

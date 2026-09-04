@@ -68,6 +68,20 @@ typedef struct
 } AtlasIoCommand;
 /** @brief One command outcome, not proof of a physical result or successful deployment. */
 typedef struct { uint32_t ticket; AtlasIoCommandType type; AtlasStatus status; } AtlasIoResult;
+/** @brief First failed operation in the independent ADC3 VREF/temperature state machine. */
+typedef enum
+{
+    ATLAS_IO_REFERENCE_FAILURE_NONE = 0,
+    ATLAS_IO_REFERENCE_FAILURE_CONFIGURE,
+    ATLAS_IO_REFERENCE_FAILURE_START,
+    ATLAS_IO_REFERENCE_FAILURE_OVERRUN,
+    ATLAS_IO_REFERENCE_FAILURE_TIMEOUT,
+    ATLAS_IO_REFERENCE_FAILURE_POLL,
+    ATLAS_IO_REFERENCE_FAILURE_STOP,
+    ATLAS_IO_REFERENCE_FAILURE_RAW_RANGE,
+    ATLAS_IO_REFERENCE_FAILURE_VDDA_RANGE,
+    ATLAS_IO_REFERENCE_FAILURE_TEMPERATURE_RANGE
+} AtlasIoReferenceFailureStage;
 /** @brief Coherent service diagnostics; last physical pulse events remain independently bounded. */
 typedef struct
 {
@@ -78,8 +92,11 @@ typedef struct
     uint32_t heartbeat, published_at_ms, adc_errors, command_rejections;
     uint32_t stack_free_words, reset_flags, last_ticket;
     uint32_t power_events, ecc_events, ecc_monitor_register, ecc_failing_word, ecc_error_code;
+    uint32_t reference_raw, reference_hal_status, reference_hal_error;
+    AtlasIoReferenceFailureStage reference_failure_stage;
     AtlasStatus status, last_command_status;
     uint8_t gpio_inputs, gpio_commanded_high, pwm_enabled_mask;
+    bool reference_temperature_channel;
     bool external_switch, arm_supply_present, configured, emergency_latched;
 } AtlasIoSnapshot;
 /** @brief Initialize private DMA memory/calibration, then create the static owner.

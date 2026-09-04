@@ -2,7 +2,7 @@
 
 Atlas is a collaborative STM32H743 flight-computer development project for the Rev. 0.1 board. It provides sensor and communications drivers, a statically allocated FreeRTOS framework, owned peripheral services, build projects, and reviewed hardware exports.
 
-**Current status: software integration implemented; hardware qualification outstanding.** The reviewed startup, timing, GNSS, SD, USB and output-service defects have corrections and regression tests. No board, radio link, actuator or pyro load was exercised. Passing builds and host models do not establish electrical operation or flight readiness.
+**Current status: software integration implemented; hardware qualification ongoing.** The latest BNO085 board test streams successfully; GNSS startup now has stale-UART recovery and phase diagnostics but needs a 1.0.2 reflash/physical retest. The confirmed rev-0.1 Q6-Q8 defect is handled by a mandatory RGB software inhibit. The same latest log exposes an independent ADC/power-monitor fault; 1.0.2 adds phase diagnostics without changing conversions, and that path also needs a new capture. Radio, actuator and pyro loads remain untested/disconnected. Passing builds and host models do not establish flight readiness.
 
 ## Start here
 

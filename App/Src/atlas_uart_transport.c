@@ -3,7 +3,7 @@
  * @brief Interrupt-driven UART buffering and bounded foreground transmission.
  *
  * Major functions:
- * - AtlasUartTransport_Init()/Start(): bind and arm receive-to-idle interrupts.
+ * - AtlasUartTransport_Init()/Start(): bind, clear stale RX state, and arm interrupts.
  * - AtlasUartTransport_Read()/Write(): provide loss-accounted stream I/O.
  * - AtlasUartTransport_Service(): restart receive after framing/overrun errors.
  * - HAL_UARTEx_RxEventCallback()/HAL_UART_ErrorCallback(): minimal ISR dispatch.
@@ -18,6 +18,18 @@
 #endif
 
 static AtlasUartTransport *atlas_uart_registry[ATLAS_UART_REGISTRY_CAPACITY];
+
+/**
+ * @brief Retain the most recent HAL result and UART error bits for diagnostics.
+ * @param transport Transport whose health record is updated.
+ * @param hal_status HAL call result.
+ */
+static void atlas_uart_record_hal(AtlasUartTransport *transport,
+                                  HAL_StatusTypeDef hal_status)
+{
+    transport->health.last_hal_status = (uint32_t)hal_status;
+    transport->health.last_hal_error = (uint32_t)transport->uart->ErrorCode;
+}
 
 /**
  * @brief Translate a HAL result to a common Atlas status.
@@ -73,6 +85,7 @@ static AtlasStatus atlas_uart_arm_receive(AtlasUartTransport *transport)
     hal_status = HAL_UARTEx_ReceiveToIdle_IT(transport->uart,
                                              transport->rx_chunk,
                                              ATLAS_UART_RX_CHUNK_CAPACITY);
+    atlas_uart_record_hal(transport, hal_status);
     if (hal_status != HAL_OK)
     {
         transport->running = false;
@@ -82,6 +95,30 @@ static AtlasStatus atlas_uart_arm_receive(AtlasUartTransport *transport)
 
     transport->running = true;
     transport->restart_requested = false;
+    return ATLAS_OK;
+}
+
+/**
+ * @brief Abort any old receive transaction and clear stale FIFO/error state.
+ * @param transport Initialized transport with a valid UART handle.
+ * @return ATLAS_OK or a translated HAL abort failure.
+ * @note NEO-M9N and other talkers may fill USART RX before a staged probe. The
+ *       STM32 HAL can reject ReceiveToIdle when that pre-existing overrun is
+ *       serviced during arming, so every non-running start begins with the HAL's
+ *       documented error-clear and RX-flush path.
+ */
+static AtlasStatus atlas_uart_preflight_receive(AtlasUartTransport *transport)
+{
+    const HAL_StatusTypeDef hal_status = HAL_UART_AbortReceive(transport->uart);
+    atlas_uart_record_hal(transport, hal_status);
+    if (hal_status != HAL_OK)
+    {
+        return atlas_uart_from_hal(hal_status);
+    }
+
+    ++transport->health.receive_preflights;
+    transport->rx_tail = transport->rx_head;
+    __DMB();
     return ATLAS_OK;
 }
 
@@ -173,6 +210,8 @@ AtlasStatus AtlasUartTransport_Init(AtlasUartTransport *transport,
  */
 AtlasStatus AtlasUartTransport_Start(AtlasUartTransport *transport)
 {
+    AtlasStatus status;
+
     if (transport == NULL)
     {
         return ATLAS_ERROR_NULL;
@@ -185,7 +224,23 @@ AtlasStatus AtlasUartTransport_Start(AtlasUartTransport *transport)
     {
         return ATLAS_OK;
     }
-    return atlas_uart_arm_receive(transport);
+
+    status = atlas_uart_preflight_receive(transport);
+    if (status != ATLAS_OK)
+    {
+        return status;
+    }
+    status = atlas_uart_arm_receive(transport);
+    if (status == ATLAS_OK)
+    {
+        return ATLAS_OK;
+    }
+
+    /* A continuously transmitting peer can race the short abort-to-arm window.
+     * Retry the complete clear/flush/arm sequence once, never indefinitely. */
+    ++transport->health.start_retries;
+    status = atlas_uart_preflight_receive(transport);
+    return status == ATLAS_OK ? atlas_uart_arm_receive(transport) : status;
 }
 
 /**
@@ -209,6 +264,7 @@ AtlasStatus AtlasUartTransport_Stop(AtlasUartTransport *transport)
     transport->running = false;
     transport->restart_requested = false;
     hal_status = HAL_UART_AbortReceive(transport->uart);
+    atlas_uart_record_hal(transport, hal_status);
     return atlas_uart_from_hal(hal_status);
 }
 
@@ -219,6 +275,8 @@ AtlasStatus AtlasUartTransport_Stop(AtlasUartTransport *transport)
  */
 AtlasStatus AtlasUartTransport_Service(AtlasUartTransport *transport)
 {
+    AtlasStatus status;
+
     if (transport == NULL)
     {
         return ATLAS_ERROR_NULL;
@@ -228,7 +286,11 @@ AtlasStatus AtlasUartTransport_Service(AtlasUartTransport *transport)
         return transport->running ? ATLAS_OK : ATLAS_ERROR_NOT_READY;
     }
 
-    (void)HAL_UART_AbortReceive(transport->uart);
+    status = atlas_uart_preflight_receive(transport);
+    if (status != ATLAS_OK)
+    {
+        return status;
+    }
     ++transport->health.receive_restarts;
     return atlas_uart_arm_receive(transport);
 }
@@ -352,6 +414,7 @@ AtlasStatus AtlasUartTransport_Write(AtlasUartTransport *transport,
                                    (uint8_t *)(uintptr_t)data,
                                    (uint16_t)length,
                                    timeout_ms);
+    atlas_uart_record_hal(transport, hal_status);
     if (hal_status == HAL_OK)
     {
         transport->health.bytes_transmitted += (uint32_t)length;
@@ -460,6 +523,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *uart)
     }
 
     ++transport->health.uart_errors;
+    transport->health.last_hal_error = (uint32_t)uart->ErrorCode;
     transport->running = false;
     transport->restart_requested = true;
 }

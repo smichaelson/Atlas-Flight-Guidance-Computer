@@ -32,6 +32,8 @@
 #define UBX_MON_VER_MIN_LENGTH          (40U)
 #define UBX_FRAME_OVERHEAD              (8U)
 #define UBX_DEFAULT_TIMEOUT_MS          (1000U)
+#define UBX_IDENTITY_TIMEOUT_MS         (3000U)
+#define UBX_IDENTITY_REPOLL_MS          (250U)
 #define UBX_INTERBYTE_TIMEOUT_MS         (250U)
 #define UBX_FRAME_TIMEOUT_MS            (2000U)
 
@@ -115,6 +117,41 @@ static uint64_t atlas_gnss_u64_width(const uint8_t *data, size_t size)
         value |= (uint64_t)data[index] << (8U * index);
     }
     return value;
+}
+
+/**
+ * @brief Retain a typed GNSS failure together with the latest UART error bits.
+ * @param gnss Driver whose diagnostic state is updated.
+ * @param stage Exact startup, configuration, or service phase.
+ * @param status Atlas result returned to the caller.
+ * @return status unchanged for compact error propagation.
+ */
+static AtlasStatus atlas_gnss_fail(AtlasGnss *gnss,
+                                   AtlasGnssFailureStage stage,
+                                   AtlasStatus status)
+{
+    if (gnss != NULL)
+    {
+        gnss->health.last_failure_stage = stage;
+        gnss->health.last_failure_status = status;
+        if (gnss->transport != NULL)
+        {
+            gnss->health.last_uart_error =
+                gnss->transport->health.last_hal_error;
+        }
+    }
+    return status;
+}
+
+/**
+ * @brief Mark the latest GNSS startup/configuration sequence complete.
+ * @param gnss Driver whose retained failure fields are cleared.
+ */
+static void atlas_gnss_clear_failure(AtlasGnss *gnss)
+{
+    gnss->health.last_failure_stage = ATLAS_GNSS_FAILURE_NONE;
+    gnss->health.last_failure_status = ATLAS_OK;
+    gnss->health.last_uart_error = 0U;
 }
 
 /**
@@ -658,7 +695,7 @@ static AtlasStatus atlas_gnss_readback_ram_configuration(AtlasGnss *gnss,
 }
 
 /**
- * @brief Start the NEO-M9N transport/PPS capture and prove UBX communication.
+ * @brief Clear stale USART RX, prove NEO-M9N UBX communication, and start PPS.
  * @param gnss Destination driver instance.
  * @param transport Initialized transport object to bind to USART1.
  * @param uart Initialized USART1 at the receiver's current baud.
@@ -672,6 +709,7 @@ AtlasStatus AtlasGnss_Init(AtlasGnss *gnss,
 {
     AtlasStatus status;
     uint32_t started_ms;
+    uint32_t last_poll_ms;
 
     if ((gnss == NULL) || (transport == NULL) || (uart == NULL) ||
         (pps_timer == NULL))
@@ -685,22 +723,18 @@ AtlasStatus AtlasGnss_Init(AtlasGnss *gnss,
     gnss->parser_state = ATLAS_GNSS_PARSE_SYNC1;
 
     status = AtlasUartTransport_Init(transport, uart);
-    if (status == ATLAS_OK)
-    {
-        status = AtlasUartTransport_Start(transport);
-    }
     if (status != ATLAS_OK)
     {
-        return status;
+        return atlas_gnss_fail(gnss,
+                               ATLAS_GNSS_FAILURE_TRANSPORT_INIT,
+                               status);
     }
-    status = AtlasTime_StartCounter(pps_timer);
+    status = AtlasUartTransport_Start(transport);
     if (status != ATLAS_OK)
     {
-        return status;
-    }
-    if (HAL_TIM_IC_Start_IT(pps_timer, TIM_CHANNEL_1) != HAL_OK)
-    {
-        return ATLAS_ERROR_IO;
+        return atlas_gnss_fail(gnss,
+                               ATLAS_GNSS_FAILURE_TRANSPORT_START,
+                               status);
     }
 
     /* MON-VER is a side-effect-free poll and proves bidirectional UBX framing. */
@@ -713,25 +747,73 @@ AtlasStatus AtlasGnss_Init(AtlasGnss *gnss,
                                0U);
     if (status != ATLAS_OK)
     {
-        return status;
+        return atlas_gnss_fail(gnss,
+                               ATLAS_GNSS_FAILURE_MON_VER_WRITE,
+                               status);
     }
     started_ms = HAL_GetTick();
+    last_poll_ms = started_ms;
     while (!gnss->version_received &&
-           ((HAL_GetTick() - started_ms) < UBX_DEFAULT_TIMEOUT_MS))
+           ((HAL_GetTick() - started_ms) < UBX_IDENTITY_TIMEOUT_MS))
     {
         status = AtlasGnss_Service(gnss, 512U);
         if (status != ATLAS_OK)
         {
-            return status;
+            return atlas_gnss_fail(gnss,
+                                   ATLAS_GNSS_FAILURE_MON_VER_SERVICE,
+                                   status);
+        }
+        /* The host UART is available before the receiver's protocol engine is
+         * necessarily ready after a shared-rail power-up. Re-poll a read-only
+         * identity message at a bounded cadence so one early command cannot be
+         * lost for the entire boot; never reset or persist receiver state here. */
+        if (!gnss->version_received &&
+            ((HAL_GetTick() - last_poll_ms) >= UBX_IDENTITY_REPOLL_MS))
+        {
+            status = AtlasGnss_SendUbx(gnss,
+                                       UBX_CLASS_MON,
+                                       UBX_ID_MON_VER,
+                                       NULL,
+                                       0U,
+                                       false,
+                                       0U);
+            if (status != ATLAS_OK)
+            {
+                return atlas_gnss_fail(gnss,
+                                       ATLAS_GNSS_FAILURE_MON_VER_WRITE,
+                                       status);
+            }
+            last_poll_ms = HAL_GetTick();
         }
         AtlasTime_DelayMs(1U);
     }
     if (!gnss->version_received)
     {
         ++gnss->health.command_timeouts;
-        return ATLAS_ERROR_IDENTITY;
+        return atlas_gnss_fail(gnss,
+                               ATLAS_GNSS_FAILURE_MON_VER_TIMEOUT,
+                               ATLAS_ERROR_IDENTITY);
     }
 
+    /* PPS is intentionally started only after UART identity succeeds. A failed
+     * communication probe can therefore be retried without disturbing TIM2's
+     * capture channel or the BNO085 user's already-running microsecond clock. */
+    status = AtlasTime_StartCounter(pps_timer);
+    if (status != ATLAS_OK)
+    {
+        return atlas_gnss_fail(gnss,
+                               ATLAS_GNSS_FAILURE_TIMEBASE_START,
+                               status);
+    }
+    if (HAL_TIM_IC_Start_IT(pps_timer, TIM_CHANNEL_1) != HAL_OK)
+    {
+        return atlas_gnss_fail(gnss,
+                               ATLAS_GNSS_FAILURE_PPS_CAPTURE_START,
+                               ATLAS_ERROR_IO);
+    }
+
+    gnss->health.pps_capture_started = true;
+    atlas_gnss_clear_failure(gnss);
     gnss->initialized = true;
     return ATLAS_OK;
 }
@@ -755,7 +837,9 @@ AtlasStatus AtlasGnss_Service(AtlasGnss *gnss, size_t byte_budget)
     status = AtlasUartTransport_Service(gnss->transport);
     if (status != ATLAS_OK)
     {
-        return status;
+        return atlas_gnss_fail(gnss,
+                               ATLAS_GNSS_FAILURE_RUNTIME_SERVICE,
+                               status);
     }
     if (byte_budget == 0U)
     {
@@ -914,13 +998,23 @@ AtlasStatus AtlasGnss_ConfigureRam(AtlasGnss *gnss,
                                                (uint16_t)index,
                                                true,
                                                UBX_DEFAULT_TIMEOUT_MS);
-        if (status == ATLAS_OK)
+        if (status != ATLAS_OK)
         {
-            status = atlas_gnss_readback_ram_configuration(gnss,
-                                                            measurement_period_ms,
-                                                            disable_nmea);
+            return atlas_gnss_fail(gnss,
+                                   ATLAS_GNSS_FAILURE_CONFIGURATION_WRITE,
+                                   status);
         }
-        return status;
+        status = atlas_gnss_readback_ram_configuration(gnss,
+                                                        measurement_period_ms,
+                                                        disable_nmea);
+        if (status != ATLAS_OK)
+        {
+            return atlas_gnss_fail(gnss,
+                                   ATLAS_GNSS_FAILURE_CONFIGURATION_READBACK,
+                                   status);
+        }
+        atlas_gnss_clear_failure(gnss);
+        return ATLAS_OK;
     }
 }
 

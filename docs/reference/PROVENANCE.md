@@ -19,11 +19,11 @@ The CEVA adapter in [atlas_bno085.c](../../App/Src/atlas_bno085.c) supplies rese
 
 ### Preserved baseline comparisons
 
-The preceding provenance review found that all 31 vendored kernel C/header/assembly files matched the installed package after **CRLF/LF normalization**; they were not byte-identical to that local package. All 12 retained CEVA files were byte-identical to the clean local checkout at the pinned commit. These checks establish source provenance, not correctness, security currency, or compatibility with untested hardware.
+The preceding provenance review found that all 31 vendored kernel C/header/assembly files matched the installed package after **CRLF/LF normalization**; they were not byte-identical to that local package. Before the 2026-09-03 board follow-up, all 12 retained CEVA files were byte-identical to the clean local checkout at the pinned commit. The current tree intentionally changes only [`sh2.c`](../../ThirdParty/CEVA/sh2/sh2.c) in that set: `getProdIdOp` has a five-second timeout so a missing product-ID response cannot trap pre-scheduler initialization forever. The other 11 CEVA files remain at the pinned baseline. These checks establish source provenance, not correctness, security currency, or compatibility with untested hardware.
 
 All 19 entries in the [manufacturing SHA-256 manifest](../../hardware/manufacturing/SHA256SUMS.txt) matched. Hash agreement establishes preservation, not manufacturing correctness.
 
-## Local integration changes (2026-09-02)
+## Local integration changes (2026-09-02 through 2026-09-04)
 
 The correction work does not upgrade HAL/CMSIS, FreeRTOS, CEVA, FatFs or the USB library version. It carries these explicit, reviewable local USB middleware changes:
 
@@ -35,6 +35,8 @@ The correction work does not upgrade HAL/CMSIS, FreeRTOS, CEVA, FatFs or the USB
 
 These are Atlas single-CDC-profile fixes against the bundled source, not an upstream release or a general composite-class redesign. Preserve the ST license headers. [The real core/class regression test](../../Tests/services/test_usb_cdc.c) covers the corrected request/data paths. Reconcile each change explicitly on a vendor update; do not overwrite it with an unreviewed package refresh.
 
+The sole CEVA-source patch is the `getProdIdOp.timeout_us = 5000000` initializer described above. It does not change packet parsing or wire data. [`test_sh2_timeout.c`](../../Tests/host/test_sh2_timeout.c) compiles the actual pinned `sh2.c`, `shtp.c`, and `sh2_util.c` and proves a silent accepted request returns `SH2_ERR_TIMEOUT`. [`test_bno085_ceva.c`](../../Tests/host/test_bno085_ceva.c) runs the project adapter with the actual parser through reset, four product records and four feature writes; the focused mock additionally checks the held-LOW edge gate, maximum transfer, exact shifted address and reset-first shared-I2C recovery. Preserve the Apache-2.0 header and re-evaluate this small patch when advancing CEVA.
+
 Generated/project integration also changes: SD BSP/disk becomes polling and explicit-mount-generation-owned (including ST's disk initialization cache); USB PCD receives a dedicated EP2 TX FIFO and VBUS lifecycle; ADC/TIM6/PWM runtime overrides, fatal/ADC/ECC callbacks and DMA placement are maintained project contracts. The [regeneration instructions](../DEVELOPMENT.md#generated-code-and-dependencies) and [peripheral guide](../PERIPHERALS.md#verification-and-regeneration) list them.
 
 The correction review also made main-stack placement explicit in IAR and added GNU assertions against MPU-guard overlap. IAR placement syntax/section precedence was checked against [IAR's linker documentation](https://docs.iar.com/ewarm/10.1x/en/iar-c-c---development/linking-using-ilink/placing-code-and-data-the-linker-configuration-file.html); an actual IAR build remains pending. GNU's generated `sysmem.c` allocator was replaced with a rejecting zero-heap boundary, and radio/BLE command formatting no longer depends on libc formatted I/O. No C-library source was modified.
@@ -43,7 +45,7 @@ The obsolete weak-callback SD host wrapper was retired after replacing the DMA c
 
 ### PCB bring-up additions
 
-The subsequent PCB bring-up work adds an isolated compile-time application, strict USB diagnostic protocol, desktop Tk dashboard, exclusive SD fixture test, offline image verifier and `Bringup` presets. It changes no vendor-library version or manufacturing file. Normal and diagnostic output gates are distinct; the bring-up protocol cannot enable PWM/pyro or save module configuration. The board's factory STM32 ROM handles DFU; no application bootloader binary was imported. Python/Tk and pyserial are laptop-side only; no web service or account is involved. See [startup](../startup.md) for use and [review evidence](../REVIEW_REPORT.md) for boundaries.
+The subsequent PCB bring-up work adds an isolated compile-time application, strict USB diagnostic protocol, desktop Tk dashboard, exclusive SD fixture test, offline image verifier and `Bringup` presets. It changes no vendor-library version or manufacturing file; the later bounded CEVA operation-table patch is disclosed above. Normal and diagnostic output gates are distinct; the bring-up protocol cannot enable PWM/pyro or save module configuration. The board's factory STM32 ROM handles DFU; no application bootloader binary was imported. Python/Tk and pyserial are laptop-side only; no web service or account is involved. See [startup](../startup.md) for use and [review evidence](../REVIEW_REPORT.md) for boundaries.
 
 ## Dependency updates
 

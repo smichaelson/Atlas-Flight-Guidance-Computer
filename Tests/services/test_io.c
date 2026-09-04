@@ -113,10 +113,12 @@ static void fixture(void)
 #endif
     memset(&working,0,sizeof(working));memset(&published,0,sizeof(published));memset(&settings,0,sizeof(settings));
     memset(test_gpio,0,sizeof(test_gpio));memset(test_tim,0,sizeof(test_tim));memset(test_dma,0,sizeof(test_dma));
+    memset(test_adc,0,sizeof(test_adc));memset(adcs,0,sizeof(adcs));
     test_tick=1000U;test_permitted=true;emergency_latched=false;hardware_ready=true;started=true;
     configured_locked=false;pulse_active=pulse_complete=pulse_failed=false;test_abort_fails=false;
     test_primask=test_ipsr=0U;test_safety_pending=false;external_pending=internal_pending=false;
-    reference_valid=false;next_ticket=output_epoch=0U;
+    reference_valid=false;internal_temperature=false;
+    reference_vdda=reference_started_ms=internal_started_ms=next_ticket=output_epoch=0U;
     ecc_events=ecc_monitor_register=ecc_failing_word=ecc_error_code=0U;
     for(unsigned i=0;i<3U;++i)timers[i].Instance=&test_tim[i];
     for(unsigned i=0;i<2U;++i){dmas[i].Instance=&test_dma[i];dmas[i].State=HAL_DMA_STATE_READY;adcs[i].Instance=&test_adc[i];adcs[i].DMA_Handle=&dmas[i];}
@@ -264,9 +266,23 @@ static void analog_cases(void)
     assert(ADC3->selected_channel==ADC_CHANNEL_TEMPSENSOR && internal_pending);
     ADC3->raw=test_temp_cal1;ADC3->ISR=ADC_FLAG_EOC;io_reference(test_tick);
     assert(!internal_pending && working.analog.die_temperature_c==30);
+    assert(working.reference_failure_stage==ATLAS_IO_REFERENCE_FAILURE_NONE &&
+           working.reference_temperature_channel && working.reference_raw==test_temp_cal1);
     external_started_ms=test_tick-21U;assert(!io_sample(test_tick));
     assert(emergency_latched && working.status!=ATLAS_OK);
-    puts("PASS IO: incomplete scan rejection, external ranks, separate VREF/temperature samples and ADC timeout");
+
+    /* The released v1.0.1 log could only say IO. Prove that this image retains
+     * the exact ADC3 phase and raw evidence without changing conversion policy. */
+    fixture();assert(io_internal_start(false)==HAL_OK);
+    ADC3->raw=1U;ADC3->ISR=ADC_FLAG_EOC;io_reference(test_tick);
+    assert(working.status==ATLAS_ERROR_IO && emergency_latched);
+    assert(working.reference_failure_stage==ATLAS_IO_REFERENCE_FAILURE_RAW_RANGE &&
+           !working.reference_temperature_channel && working.reference_raw==1U &&
+           working.reference_hal_status==HAL_OK && working.reference_hal_error==0U);
+    io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_TIMEOUT,true,HAL_TIMEOUT,99U);
+    assert(working.reference_failure_stage==ATLAS_IO_REFERENCE_FAILURE_RAW_RANGE &&
+           !working.reference_temperature_channel && working.reference_raw==1U);
+    puts("PASS IO: complete-scan gating, ADC3 VREF/temperature sequencing, timeout and first-failure evidence");
 }
 /** @brief Execute the adapter boundary cases. @return Zero after successful assertions. */
 int main(void)

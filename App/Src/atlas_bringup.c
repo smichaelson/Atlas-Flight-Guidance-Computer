@@ -54,7 +54,11 @@ typedef struct
     AtlasRtosSnapshot sensors;
     uint32_t attempted, published_ms, count[4], errors[4], bno_count[4];
     AtlasGnssHealth gnss_health;
+    AtlasUartTransportHealth gnss_transport_health;
     AtlasBleHealth ble_health;
+    AtlasBno085Health bno_health;
+    uint32_t bno_pending_length, bno_intn_low, bno_initialized;
+    uint32_t led_commanded, led_gates, led_initialized, led_inhibited;
     uint32_t ble_received, radio_received;
     uint8_t ble_rx[32], radio_rx[32], ble_length, radio_length;
     char ble_model[ATLAS_BLE_IDENTITY_CAPACITY], ble_firmware[ATLAS_BLE_IDENTITY_CAPACITY];
@@ -116,7 +120,17 @@ static void bench_publish(void)
     working.attempted = bench_board->attempted_modules;
     working.published_ms = HAL_GetTick();
     working.gnss_health = bench_board->gnss.health;
+    working.gnss_transport_health = bench_board->gnss_transport.health;
     working.ble_health = bench_board->ble.health;
+    working.bno_health = bench_board->bno085.health;
+    working.bno_pending_length = bench_board->bno085.pending_transfer_length;
+    working.bno_intn_low =
+        HAL_GPIO_ReadPin(BNO085_H_INTN_GPIO_Port, BNO085_H_INTN_Pin) == GPIO_PIN_RESET ? 1U : 0U;
+    working.bno_initialized = bench_board->bno085.initialized ? 1U : 0U;
+    working.led_commanded = (uint32_t)bench_board->led.color;
+    working.led_gates = AtlasLed_ReadGateMask(&bench_board->led);
+    working.led_initialized = bench_board->led.initialized ? 1U : 0U;
+    working.led_inhibited = bench_board->led.output_inhibited ? 1U : 0U;
     working.lsm_interrupts = bench_board->lsm6dsv16b.health.interrupt_count;
     working.ble_command = bench_board->ble.command_mode;
     working.ble_dtr = AtlasBle_IsDtrAsserted(&bench_board->ble);
@@ -434,7 +448,7 @@ static void bench_hello(void)
     /* Leading LF terminates any partial record left in the host on reconnect. */
     AtlasBench_JsonRaw(
         &json, "\n{\"type\":\"hello\",\"profile\":\"bringup\",\"version\":\"" ATLAS_BRINGUP_VERSION
-               "\",\"pwm_pyro_inhibited\":true");
+               "\",\"pwm_pyro_inhibited\":true,\"led_inhibited\":true");
     bench_field(&json, "schema", ATLAS_BENCH_SCHEMA);
     bench_field(&json, "clock_hz", SystemCoreClock);
     bench_field(&json, "device_id", DBGMCU->IDCODE);
@@ -569,8 +583,26 @@ static void bench_status(void)
     AtlasBench_JsonScaled(&j, s->bno_rotation_vector.un.rotationVector.j, 1000000U);
     AtlasBench_JsonRaw(&j, ",");
     AtlasBench_JsonScaled(&j, s->bno_rotation_vector.un.rotationVector.k, 1000000U);
+    AtlasBench_JsonRaw(&j, "],\"health\":{\"interrupts\":");
+    AtlasBench_JsonU32(&j, b->bno_health.interrupts);
+    bench_field(&j, "reads", b->bno_health.transfers_read);
+    bench_field(&j, "writes", b->bno_health.transfers_written);
+    bench_field(&j, "io_errors", b->bno_health.io_errors);
+    bench_field(&j, "protocol_errors", b->bno_health.protocol_errors);
+    bench_field(&j, "decoded", b->bno_health.decoded_samples);
+    bench_field(&j, "decode_errors", b->bno_health.decode_errors);
+    bench_field(&j, "resets", b->bno_health.async_resets);
+    bench_field(&j, "recovery_attempts", b->bno_health.bus_recovery_attempts);
+    bench_field(&j, "recovery_failures", b->bno_health.bus_recovery_failures);
+    bench_field(&j, "last_hal_status", b->bno_health.last_hal_status);
+    bench_field(&j, "last_hal_error", b->bno_health.last_hal_error);
+    bench_field(&j, "failure_stage", b->bno_health.last_failure_stage);
+    bench_field(&j, "last_length", b->bno_health.last_transfer_length);
+    bench_field(&j, "pending_length", b->bno_pending_length);
+    bench_field(&j, "intn_low", b->bno_intn_low);
+    bench_field(&j, "initialized", b->bno_initialized);
     const AtlasGnssNavPvt *g = &s->gnss_nav_pvt;
-    AtlasBench_JsonRaw(&j, "]},\"gnss\":{\"version\":");
+    AtlasBench_JsonRaw(&j, "}},\"gnss\":{\"version\":");
     AtlasBench_JsonString(&j, b->gnss_version, sizeof(b->gnss_version));
     bench_field(&j, "t", g->received_at_ms);
     bench_field(&j, "frames", b->gnss_health.nav_pvt_frames);
@@ -589,6 +621,18 @@ static void bench_status(void)
     bench_field(&j, "tow_ms", g->time_of_week_ms);
     bench_field(&j, "pps_count", s->gnss_pps.pulse_count);
     bench_field(&j, "pps_us", s->gnss_pps.period_us);
+    bench_field(&j, "failure_stage", b->gnss_health.last_failure_stage);
+    bench_field(&j, "failure_status", b->gnss_health.last_failure_status);
+    bench_field(&j, "pps_started", b->gnss_health.pps_capture_started ? 1U : 0U);
+    bench_field(&j, "rx_bytes", b->gnss_transport_health.bytes_received);
+    bench_field(&j, "tx_bytes", b->gnss_transport_health.bytes_transmitted);
+    bench_field(&j, "dropped", b->gnss_transport_health.dropped_bytes);
+    bench_field(&j, "uart_errors", b->gnss_transport_health.uart_errors);
+    bench_field(&j, "restarts", b->gnss_transport_health.receive_restarts);
+    bench_field(&j, "preflights", b->gnss_transport_health.receive_preflights);
+    bench_field(&j, "start_retries", b->gnss_transport_health.start_retries);
+    bench_field(&j, "hal_status", b->gnss_transport_health.last_hal_status);
+    bench_field(&j, "hal_error", b->gnss_transport_health.last_hal_error);
     AtlasBench_JsonRaw(&j, "},\"power\":{\"available\":");
     AtlasBench_JsonRaw(&j, io_available ? "true" : "false");
     bench_field(&j, "start", io_start);
@@ -615,6 +659,11 @@ static void bench_status(void)
     }
     AtlasBench_JsonRaw(&j, "]");
     bench_field(&j, "adc_errors", io.adc_errors);
+    bench_field(&j, "ref_stage", (uint32_t)io.reference_failure_stage);
+    bench_field(&j, "ref_channel", io.reference_temperature_channel ? 1U : 0U);
+    bench_field(&j, "ref_raw", io.reference_raw);
+    bench_field(&j, "ref_hal_status", io.reference_hal_status);
+    bench_field(&j, "ref_hal_error", io.reference_hal_error);
     bench_field(&j, "reset_flags", io.reset_flags);
     bench_field(&j, "power_events", io.power_events);
     bench_field(&j, "ecc_events", io.ecc_events);
@@ -624,6 +673,11 @@ static void bench_status(void)
     bench_field(&j, "switch", io.external_switch ? 1U : 0U);
     bench_field(&j, "pwm", io.pwm_enabled_mask);
     bench_field(&j, "armed", io.pyro.software_armed ? 1U : 0U);
+    AtlasBench_JsonRaw(&j, "},\"led\":{\"commanded\":");
+    AtlasBench_JsonU32(&j, b->led_commanded);
+    bench_field(&j, "gates", b->led_gates);
+    bench_field(&j, "initialized", b->led_initialized);
+    bench_field(&j, "inhibited", b->led_inhibited);
     AtlasBench_JsonRaw(&j, "},\"sd\":{\"start\":");
     AtlasBench_JsonU32(&j, storage_start);
     bench_field(&j, "card", sd.card_detected ? 1U : 0U);

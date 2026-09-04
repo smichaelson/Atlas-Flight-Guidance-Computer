@@ -5,7 +5,7 @@
  * Major functions:
  * - HAL_TIM_Base_Start(): models the bundled HAL's READY-to-BUSY contract.
  * - review_feed()/review_reply(): supply real checksum-framed UART input.
- * - main(): checks clean GNSS startup, a shared running timer, and resync.
+ * - main(): checks stale-RX recovery, explicit retry, shared timer use, and resync.
  *
  * Links the production GNSS, UART, status, and time implementations. The timer
  * precondition matches AtlasBno085_Init() preceding AtlasGnss_Init() in board
@@ -192,14 +192,44 @@ int main(void)
     timer.Instance = &counter_registers;
     timer.State = HAL_TIM_STATE_READY;
     review_transport = &transport;
-    AtlasTest_SetUartTransmitHook(review_reply);
 
+    /* Model the field failure: NMEA arrived before staged RX was armed and the
+     * first identity attempt receives no MON-VER response. PPS must stay idle so
+     * an operator-requested retry can safely begin from a quiesced transport. */
+    AtlasTest_ResetUartReceiveTrace();
+    AtlasTest_SetUartStaleReceive(true);
+    AtlasTest_SetUartTransmitHook(NULL);
     AtlasStatus status = AtlasGnss_Init(&gnss, &transport, &uart, &timer);
-    if (status != ATLAS_OK || review_polls != 1U)
+    if (status != ATLAS_ERROR_IDENTITY ||
+        gnss.health.last_failure_stage != ATLAS_GNSS_FAILURE_MON_VER_TIMEOUT ||
+        gnss.health.pps_capture_started || review_timer_starts != 0U ||
+        AtlasTest_GetUartAbortCount() != 1U || AtlasTest_GetUartArmCount() != 1U ||
+        transport.health.bytes_transmitted != 96U ||
+        gnss.health.command_timeouts != 1U)
     {
-        puts("HARNESS ERROR: isolated GNSS startup control failed");
+        puts("FAIL GNSS retry: first identity failure did not remain retry-safe");
         return 2;
     }
+    if (AtlasUartTransport_Stop(&transport) != ATLAS_OK)
+    {
+        puts("HARNESS ERROR: could not quiesce failed GNSS transport");
+        return 2;
+    }
+    AtlasTest_SetUartTransmitHook(review_reply);
+    status = AtlasGnss_Init(&gnss, &transport, &uart, &timer);
+    if (status != ATLAS_OK || review_polls != 1U)
+    {
+        puts("FAIL GNSS retry: explicit second identity attempt did not recover");
+        return 2;
+    }
+    if (gnss.health.last_failure_stage != ATLAS_GNSS_FAILURE_NONE ||
+        gnss.health.last_failure_status != ATLAS_OK ||
+        !gnss.health.pps_capture_started)
+    {
+        puts("FAIL GNSS retry: successful attempt retained invalid diagnostics");
+        return 2;
+    }
+    puts("PASS GNSS: stale pre-probe RX flushed; failed identity remained manually retryable");
     review_frame(0x01U, 0x07U, nav, sizeof(nav));
     if (AtlasGnss_Service(&gnss, 0U) != ATLAS_OK || gnss.health.nav_pvt_frames != 1U)
     {
@@ -221,6 +251,7 @@ int main(void)
 
     /* Independent board-order fixture: the BNO085 clock request precedes the
      * first GNSS capture request. The sole shared-counter helper owns HAL start. */
+    (void)AtlasUartTransport_Stop(&transport);
     counter_registers.CR1 = 0U;
     timer.State = HAL_TIM_STATE_READY;
     timer.counter = 123456U;

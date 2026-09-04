@@ -1076,8 +1076,12 @@ static AtlasStatus atlas_rtos_validate_command(const AtlasRtosCommandRequest *re
     switch (request->type)
     {
         case ATLAS_RTOS_COMMAND_LED_SET:
-            return ((uint32_t)request->arguments.led_color <=
-                    (uint32_t)ATLAS_LED_WHITE) ? ATLAS_OK : ATLAS_ERROR_ARGUMENT;
+            if ((uint32_t)request->arguments.led_color > (uint32_t)ATLAS_LED_WHITE)
+            {
+                return ATLAS_ERROR_ARGUMENT;
+            }
+            return request->arguments.led_color == ATLAS_LED_OFF ?
+                   ATLAS_OK : ATLAS_ERROR_UNSUPPORTED;
         case ATLAS_RTOS_COMMAND_BUZZER_BEEP:
             return ((request->arguments.buzzer.frequency_hz >=
                      ATLAS_BUZZER_MIN_FREQUENCY_HZ) &&

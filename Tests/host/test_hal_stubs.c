@@ -14,7 +14,12 @@
 
 static uint32_t atlas_test_tick;
 static AtlasTestUartTransmitHook atlas_test_uart_transmit_hook;
+static bool atlas_test_uart_stale_receive;
+static uint32_t atlas_test_uart_arm_failures;
+static uint32_t atlas_test_uart_abort_count;
+static uint32_t atlas_test_uart_arm_count;
 static AtlasTestGpioWriteHook atlas_test_gpio_write_hook;
+static AtlasTestGpioReadHook atlas_test_gpio_read_hook;
 static AtlasTestSpiTransferHook atlas_test_spi_transfer_hook;
 static AtlasTestI2cTransmitHook atlas_test_i2c_transmit_hook;
 static AtlasTestI2cReceiveHook atlas_test_i2c_receive_hook;
@@ -34,6 +39,11 @@ TIM_TypeDef atlas_test_tim15_instance;
 static uint32_t atlas_test_timer_mode_ch1;
 static uint32_t atlas_test_timer_mode_ch2;
 static uint32_t atlas_test_timer_started_mask;
+static uint32_t atlas_test_i2c_deinit_count;
+static uint32_t atlas_test_i2c_init_count;
+static uint32_t atlas_test_i2c_analog_filter_count;
+static uint32_t atlas_test_i2c_digital_filter_count;
+static uint32_t atlas_test_i2c_deinit_while_bno_reset_count;
 
 /**
  * @brief Resolve a GPIO trace word for one mock port.
@@ -95,6 +105,45 @@ void AtlasTest_SetUartTransmitHook(AtlasTestUartTransmitHook hook)
     atlas_test_uart_transmit_hook = hook;
 }
 
+/** @brief Reset staged-UART receive state and call counters. */
+void AtlasTest_ResetUartReceiveTrace(void)
+{
+    atlas_test_uart_stale_receive = false;
+    atlas_test_uart_arm_failures = 0U;
+    atlas_test_uart_abort_count = 0U;
+    atlas_test_uart_arm_count = 0U;
+}
+
+/**
+ * @brief Model a receiver that filled USART hardware before software armed RX.
+ * @param stale true to make receive arming fail until HAL abort/flush occurs.
+ */
+void AtlasTest_SetUartStaleReceive(bool stale)
+{
+    atlas_test_uart_stale_receive = stale;
+}
+
+/**
+ * @brief Model receive-arm failures that occur after a successful preflight.
+ * @param failures Number of consecutive arm calls that return HAL_ERROR.
+ */
+void AtlasTest_SetUartArmFailures(uint32_t failures)
+{
+    atlas_test_uart_arm_failures = failures;
+}
+
+/** @brief Return mock HAL receive-abort calls. */
+uint32_t AtlasTest_GetUartAbortCount(void)
+{
+    return atlas_test_uart_abort_count;
+}
+
+/** @brief Return mock receive-to-idle arm calls. */
+uint32_t AtlasTest_GetUartArmCount(void)
+{
+    return atlas_test_uart_arm_count;
+}
+
 /**
  * @brief Install or clear the deterministic GPIO transition hook.
  * @param hook Callback, or NULL to disable injection.
@@ -102,6 +151,15 @@ void AtlasTest_SetUartTransmitHook(AtlasTestUartTransmitHook hook)
 void AtlasTest_SetGpioWriteHook(AtlasTestGpioWriteHook hook)
 {
     atlas_test_gpio_write_hook = hook;
+}
+
+/**
+ * @brief Install or clear the deterministic GPIO input hook.
+ * @param hook Callback, or NULL to read modeled output levels/inactive-high inputs.
+ */
+void AtlasTest_SetGpioReadHook(AtlasTestGpioReadHook hook)
+{
+    atlas_test_gpio_read_hook = hook;
 }
 
 /**
@@ -163,9 +221,30 @@ void HAL_GPIO_Init(GPIO_TypeDef *port, GPIO_InitTypeDef *configuration)
     }
 }
 
-/** @brief Return inactive-high for unmodeled input pins. */
+/** @brief Return injected inputs, modeled output levels, or inactive-high by default. */
 GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin)
-{ (void)port; (void)pin; return GPIO_PIN_SET; }
+{
+    uint32_t *outputs;
+    uint32_t *levels;
+
+    if (atlas_test_gpio_read_hook != NULL)
+    {
+        return atlas_test_gpio_read_hook(port, pin);
+    }
+    outputs = atlas_test_gpio_word(port, &atlas_test_output_b,
+                                   &atlas_test_output_d,
+                                   &atlas_test_output_e,
+                                   &atlas_test_output_g);
+    levels = atlas_test_gpio_word(port, &atlas_test_high_b,
+                                  &atlas_test_high_d,
+                                  &atlas_test_high_e,
+                                  &atlas_test_high_g);
+    if ((outputs != NULL) && (levels != NULL) && ((*outputs & pin) != 0U))
+    {
+        return ((*levels & pin) != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+    }
+    return GPIO_PIN_SET;
+}
 
 /** @brief Dispatch modeled I2C writes and reject all unmodeled transfers. */
 HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *i2c, uint16_t address,
@@ -193,6 +272,68 @@ HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *i2c, uint16_t addres
     return HAL_ERROR;
 }
 
+/** @brief Reset I2C recovery-call counters without changing installed device hooks. */
+void AtlasTest_ResetI2cTrace(void)
+{
+    atlas_test_i2c_deinit_count = 0U;
+    atlas_test_i2c_init_count = 0U;
+    atlas_test_i2c_analog_filter_count = 0U;
+    atlas_test_i2c_digital_filter_count = 0U;
+    atlas_test_i2c_deinit_while_bno_reset_count = 0U;
+}
+
+/** @brief Return host-observed I2C deinitialization calls. */
+uint32_t AtlasTest_GetI2cDeinitCount(void) { return atlas_test_i2c_deinit_count; }
+/** @brief Return host-observed I2C initialization calls. */
+uint32_t AtlasTest_GetI2cInitCount(void) { return atlas_test_i2c_init_count; }
+/** @brief Return host-observed analog-filter configuration calls. */
+uint32_t AtlasTest_GetI2cAnalogFilterCount(void) { return atlas_test_i2c_analog_filter_count; }
+/** @brief Return host-observed digital-filter configuration calls. */
+uint32_t AtlasTest_GetI2cDigitalFilterCount(void) { return atlas_test_i2c_digital_filter_count; }
+/** @brief Return I2C deinitializations performed while BNO085 reset was asserted. */
+uint32_t AtlasTest_GetI2cDeinitWhileBnoResetCount(void)
+{ return atlas_test_i2c_deinit_while_bno_reset_count; }
+
+/** @brief Accept and count an I2C deinitialization used for shared-bus recovery. */
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *i2c)
+{
+    (void)i2c;
+    ++atlas_test_i2c_deinit_count;
+    if ((atlas_test_high_b & BNO085_NRST_Pin) == 0U)
+    {
+        ++atlas_test_i2c_deinit_while_bno_reset_count;
+    }
+    return HAL_OK;
+}
+
+/** @brief Accept and count an I2C reinitialization used for shared-bus recovery. */
+HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *i2c)
+{ (void)i2c; ++atlas_test_i2c_init_count; return HAL_OK; }
+
+/** @brief Accept and count restoration of the generated analog filter setting. */
+HAL_StatusTypeDef HAL_I2CEx_ConfigAnalogFilter(I2C_HandleTypeDef *i2c,
+                                                uint32_t enable)
+{
+    (void)i2c;
+    if (enable != I2C_ANALOGFILTER_ENABLE) { return HAL_ERROR; }
+    ++atlas_test_i2c_analog_filter_count;
+    return HAL_OK;
+}
+
+/** @brief Accept and count restoration of the generated digital filter setting. */
+HAL_StatusTypeDef HAL_I2CEx_ConfigDigitalFilter(I2C_HandleTypeDef *i2c,
+                                                 uint32_t coefficient)
+{
+    (void)i2c;
+    if (coefficient != 0U) { return HAL_ERROR; }
+    ++atlas_test_i2c_digital_filter_count;
+    return HAL_OK;
+}
+
+/** @brief Return the error code retained in a mock I2C handle. */
+uint32_t HAL_I2C_GetError(I2C_HandleTypeDef *i2c)
+{ return (i2c == NULL) ? UINT32_MAX : i2c->ErrorCode; }
+
 /** @brief Dispatch modeled SPI exchanges and reject all unmodeled transfers. */
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *spi, uint8_t *tx,
                                           uint8_t *rx, uint16_t length,
@@ -206,14 +347,31 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *spi, uint8_t *tx,
     return HAL_ERROR;
 }
 
-/** @brief Accept receive arming in host transport tests. */
+/** @brief Accept receive arming unless uncleared pre-probe UART data is modeled. */
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_IT(UART_HandleTypeDef *uart,
                                               uint8_t *data, uint16_t length)
-{ (void)uart; (void)data; (void)length; return HAL_OK; }
+{
+    (void)data;
+    (void)length;
+    ++atlas_test_uart_arm_count;
+    if (atlas_test_uart_stale_receive || atlas_test_uart_arm_failures != 0U)
+    {
+        if (atlas_test_uart_arm_failures != 0U) { --atlas_test_uart_arm_failures; }
+        if (uart != NULL) { uart->ErrorCode = 0x08U; }
+        return HAL_ERROR;
+    }
+    if (uart != NULL) { uart->ErrorCode = 0U; }
+    return HAL_OK;
+}
 
-/** @brief Accept host receive abort. */
+/** @brief Model HAL abort clearing overrun/error flags and stale RX data. */
 HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *uart)
-{ (void)uart; return HAL_OK; }
+{
+    ++atlas_test_uart_abort_count;
+    atlas_test_uart_stale_receive = false;
+    if (uart != NULL) { uart->ErrorCode = 0U; }
+    return HAL_OK;
+}
 
 /** @brief Accept host transmission without loopback. */
 HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *uart, uint8_t *data,

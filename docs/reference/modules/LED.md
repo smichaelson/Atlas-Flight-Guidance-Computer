@@ -1,103 +1,88 @@
-# RGB Status LED
+# RGB Status LED — Hardware Inhibited
 
 [Documentation hub](../../README.md) · [Current system readiness](../../SYSTEMS.md)
 
 ## Major firmware functions
 
-| Function | Contract |
+| Function | Current contract |
 |---|---|
-| `AtlasLed_Init()` | Takes PB6/PB7/PD14 back from unused CubeMX TIM4 staging, configures push-pull GPIO outputs, and establishes a fail-dark state. |
-| `AtlasLed_SetRgb()` | Sets the three logical GPIO channels and records the mask; physical green/blue mapping is unresolved. |
-| `AtlasLed_SetColor()` | Validates and applies one of the eight binary RGB combinations. |
-| `AtlasLed_Off()` | Removes all three channel drives and is safe to call repeatedly. |
+| `AtlasLed_Init()` | Writes PB6/PB7/PD14 low before reclaiming them from unused TIM4 staging, configures them as push-pull GPIO outputs, verifies low readback, and marks the RGB interface inhibited. |
+| `AtlasLed_SetRgb()` | First writes every channel low. It returns `ATLAS_ERROR_UNSUPPORTED` if any requested channel is on and never writes a high level. |
+| `AtlasLed_SetColor()` | Rejects bits outside `0x07`; valid nonzero masks reach the same mandatory inhibit. Only `ATLAS_LED_OFF` can succeed. |
+| `AtlasLed_ReadGateMask()` | Samples the three legacy-named channel-control nets. On the affected board these are **not** correctly connected MOSFET gates. |
+| `AtlasLed_Off()` | Unconditionally writes all three nets low, even when initialization did not complete. |
 
 Source: [`atlas_led.h`](../../../App/Inc/atlas_led.h) and [`atlas_led.c`](../../../App/Src/atlas_led.c).
 
-## Validation state
+## Current disposition
 
-The GPIO-ownership transition, fail-dark initialization, and logical color outputs pass deterministic host tests; the complete target image builds without warnings. Pin-to-die color, electrical polarity, current, brightness balance, color mixing, and reset appearance remain bench-pending.
+**Do not attempt to illuminate D5 on Atlas rev-0.1.** The board owner confirmed the defect against the raw KiCad design after physical tests showed no light and no package-pin response. Q6, Q7, and Q8 use DMN3404L-7 devices, whose SOT-23 terminals are pin 1 gate, pin 2 source, and pin 3 drain. The affected PCB routing instead assigns the intended LED load to pad 1, MCU control through 220 Ω to pad 2, and ground to pad 3. Consequently the copper does not implement the intended low-side switch.
 
-**Mapping conflict:** the schematic connects `LED_G`/PB7 to D5's blue pin and `LED_B`/PD14 to its green pin. Firmware remains unchanged. See the [hardware mapping evidence](../HARDWARE.md#led-mapping-conflict) and R09 in the current review; do not treat enum names as verified physical colors.
+This is not a color-order or active-level firmware problem. Driving the legacy `LED_R`, `LED_G`, or `LED_B` net high cannot make the as-built stage a valid MOSFET switch. Earlier package-pad voltage observations are consistent with an invalid/floating network and must not be used to justify further drive tests.
+
+Version `1.0.2` therefore establishes a defense-in-depth software boundary:
+
+- `ATLAS_LED_HARDWARE_INHIBITED` is compile-time fixed to `1U`; changing it causes a build error in the driver.
+- Board startup no longer requests blue, green, or yellow.
+- All driver paths write PB6, PB7, and PD14 low before evaluating a request.
+- Every nonzero direct or RTOS request returns `ATLAS_ERROR_UNSUPPORTED`.
+- The bring-up wire protocol accepts only `led 0`, and the dashboard exposes no illumination control.
+- The `hello` handshake requires `led_inhibited:true`, while status requires `led.inhibited=1` and `led.commanded=0`.
+
+These controls reduce the chance of accidental energization. They do not repair the PCB, disconnect the network physically, or qualify the affected parts after prior testing.
 
 ## RTOS access
 
-After scheduler start, set the LED only with an `ATLAS_RTOS_COMMAND_LED_SET` request. Queue acceptance and hardware execution are distinct; inspect the completion ticket/status. The direct examples below are appropriate before scheduling in a driver test, not in application/control code. Startup blue/green/yellow remains board-initialization behavior and is not a live task-health indicator.
+The only accepted RTOS LED command is `ATLAS_RTOS_COMMAND_LED_SET` with `ATLAS_LED_OFF`. Command validation rejects a valid nonzero color as `ATLAS_ERROR_UNSUPPORTED`; the driver repeats the low writes if a caller bypasses validation. Application/control code must use telemetry, USB, or the buzzer for status until a qualified hardware revision exists.
 
-## Board contract
+## Affected board contract
 
-| Logical channel | MCU pin | Schematic channel reached when high |
-|---|---|---|
-| Red | PB6 `LED_R` | D5 pin 2, red |
-| Green | PB7 `LED_G` | D5 pin 4, blue |
-| Blue | PD14 `LED_B` | D5 pin 3, green |
+| Legacy channel name | MCU pin | Intended switch | Confirmed defect |
+|---|---|---|---|
+| `LED_R` | PB6 | R106 → Q8 → R105/D5 red path | MCU control reaches transistor pad 2/physical source; intended load reaches pad 1/physical gate; pad 3/physical drain is grounded |
+| `LED_G` | PB7 | R102 → Q7 → R101/D5 green path | Same Q7 terminal mismatch |
+| `LED_B` | PD14 | R104 → Q6 → R103/D5 blue path | Same Q6 terminal mismatch |
+| Common-anode supply | `5V_SYS` | D5 supply path | Supply presence does not correct the three invalid low-side stages |
 
-The LED package is common-anode, but the MCU drives transistor gates rather than LED cathodes directly. Accordingly, GPIO high means **on** and GPIO low means **off**. CubeMX stages these pins as TIM4 alternate functions even though Atlas does not start those PWM channels. `AtlasLed_Init()` first writes the output data registers low and then explicitly reconfigures PB6, PB7, and PD14 as push-pull GPIO outputs; that ownership transfer is required for `HAL_GPIO_WritePin()` to control the LED.
+The names `gates` and `AtlasLed_ReadGateMask()` remain in the protocol/API for compatibility, but on rev-0.1 they mean the MCU-side channel-control pins only. A zero readback proves only that PB6/PB7/PD14 are being held low.
 
-## Color contract
-
-`AtlasLedColor` is a three-bit mask:
-
-| Value | Logical channels (not verified emitted colors) |
-|---|---|
-| `ATLAS_LED_OFF` | none |
-| `ATLAS_LED_RED` | red |
-| `ATLAS_LED_GREEN` | green |
-| `ATLAS_LED_BLUE` | blue |
-| `ATLAS_LED_YELLOW` | red + green |
-| `ATLAS_LED_MAGENTA` | red + blue |
-| `ATLAS_LED_CYAN` | green + blue |
-| `ATLAS_LED_WHITE` | red + green + blue |
-
-Any value with bits outside `0x07` is rejected.
-
-## Current board-level startup meaning
-
-| Logical indication | Meaning |
-|---|---|
-| Off before project initialization | Fail-dark reset/default state |
-| Blue | Bounded module bring-up in progress |
-| Green | Every `AtlasBoardInitReport` field returned `ATLAS_OK` |
-| Yellow | One or more startup checks failed |
-
-These names describe commanded masks, not verified emitted colors. The GNSS shared-timer startup defect is corrected, but even a logical green result is not flight-ready: RFD transport startup does not prove modem/peer presence, and GNSS identity/configuration does not prove a navigation fix. Storage, USB and output services have separate runtime status; this startup mask does not certify them.
-
-## Typical use
+## Safe use
 
 ```c
-(void)AtlasLed_SetColor(&atlas_board.led, ATLAS_LED_CYAN);
-/* ... */
-AtlasLed_Off(&atlas_board.led);
+AtlasStatus status = AtlasLed_SetColor(&atlas_board.led, ATLAS_LED_OFF);
+/* Any nonzero AtlasLedColor is deliberately unsupported on rev-0.1. */
 ```
 
-Future application meanings must be centralized in a status-indication service. Independent subsystems should not fight by writing colors directly.
+`AtlasLed_Off()` is suitable for unconditional shutdown/fault cleanup. Do not add direct `HAL_GPIO_WritePin(..., GPIO_PIN_SET)` calls, start TIM4 channels 1/2/3 for these nets, or weaken the dashboard handshake.
 
 ## Failure behavior
 
-- `AtlasLed_Init(NULL)` returns `ATLAS_ERROR_NULL`.
-- Set operations before initialization return `ATLAS_ERROR_NOT_READY`.
-- Invalid mask values return `ATLAS_ERROR_ARGUMENT` without applying the requested invalid state.
-- `AtlasLed_Off()` ignores NULL/uninitialized objects.
+- `AtlasLed_Init(NULL)` returns `ATLAS_ERROR_NULL` after no object can be updated.
+- Initialization returns `ATLAS_ERROR_IO` if any channel-control pin reads high after low-output setup and leaves `initialized=false` while retaining `output_inhibited=true`.
+- Calls before successful initialization still force all three nets low, then return `ATLAS_ERROR_NOT_READY`.
+- A valid nonzero mask forces all three nets low, records `ATLAS_LED_OFF`, and returns `ATLAS_ERROR_UNSUPPORTED`.
+- An off request returns `ATLAS_ERROR_IO` if low pin readback cannot be confirmed.
+- `AtlasLed_Off()` always performs the low writes; a NULL pointer only prevents state recording.
 
-The current HAL GPIO writes have no electrical feedback. A recorded color is a command state, not proof of emitted light.
+## Acceptance before any future re-enable
 
-## Bench acceptance
-
-1. Observe reset/power sequencing and require all three channels off before intentional initialization.
-2. Exercise all eight masks and map physical die color to PB6/PB7/PD14.
-3. Verify GPIO-high turns each channel on and measure transistor gate/cathode/anode levels.
-4. Measure channel current and component temperature against the schematic resistor network and LED ratings.
-5. Check mixed-color recognizability in the installed enclosure and expected ambient light.
-6. In an isolated test harness, inject pass/fail report outcomes and verify the intended logical masks against the measured mapping. Do not falsify production startup results to obtain a “green” board.
-7. Trigger watchdog/brownout/debug reset and verify no unsafe or misleading persistent indication.
+1. Keep D5 testing disabled on the current board. Verify PB6, PB7, and PD14 remain low through reset, startup, module probes, dashboard commands, RTOS startup, and watchdog/reset conditions.
+2. Require the dashboard handshake to show `led_inhibited:true`; require every status frame to show `led.inhibited=1`, `led.commanded=0`, and normally `led.gates=0`.
+3. If a control net reads high, power down and inspect MCU pin mode, shorts, leakage, and the affected network. Do not turn another channel on as a diagnostic.
+4. Document an approved PCB rework or new board revision that maps DMN3404L terminals 1/2/3 to gate/source/drain correctly and independently reviews LED/resistor polarity and ratings.
+5. On unpowered hardware, verify the revised pad-to-net mapping and absence of shorts. Then use a current-limited supply and qualify one channel at a time with gate, drain, current, light, and temperature measurements.
+6. Only after hardware acceptance, update the schematic/board revision identifier, replace the hard compile-time boundary in a separately reviewed change, restore operator controls deliberately, and rerun host, target, startup, reset, and fault tests.
 
 ## Known limits
 
-- No PWM dimming, blink scheduler, latching fault code, or LED electrical feedback exists.
-- Binary full-intensity mixing may not look perceptually balanced.
-- Direct color calls provide no ownership/priority arbitration.
-- LED status must remain supplementary to retained diagnostics and telemetry.
+- Firmware cannot correct the rev-0.1 Q6-Q8 terminal mapping.
+- Software low is not galvanic isolation and cannot prove component health.
+- `AtlasLed_ReadGateMask()` has no drain, current, optical, or `5V_SYS` feedback.
+- There is intentionally no startup-color or runtime visual-status function in version `1.0.2`.
 
 ## Primary references
 
 - Board connectivity: [`hardware/Atlas-schematic-rev-0.1.pdf`](../../../hardware/Atlas-schematic-rev-0.1.pdf).
-- MCU GPIO behavior: the STM32Cube-generated pin setup in [`Core/Src/main.c`](../../../Core/Src/main.c) and project-owned driver linked above.
+- Transistor terminal assignment: Diodes Incorporated, [DMN3404L datasheet](https://www.diodes.com/datasheet/download/DMN3404L.pdf).
+- MCU GPIO setup: [`Core/Src/main.c`](../../../Core/Src/main.c).
+- The raw KiCad defect confirmation is owner-supplied bench/design evidence and is intentionally not copied into this repository.

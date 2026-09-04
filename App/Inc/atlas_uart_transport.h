@@ -3,7 +3,7 @@
  * @brief Interrupt-driven, allocation-free UART byte transport for Atlas modules.
  *
  * Major functions:
- * - AtlasUartTransport_Init()/Start(): register and arm receive-to-idle operation.
+ * - AtlasUartTransport_Init()/Start(): register, clear stale RX state, and arm receive-to-idle.
  * - AtlasUartTransport_Read()/Write(): move bounded byte streams in foreground code.
  * - AtlasUartTransport_Service(): recover reception after a UART hardware error.
  * - AtlasUartTransport_ReconfigureBaud(): explicitly change a module host baud rate.
@@ -35,6 +35,10 @@ typedef struct
     volatile uint32_t dropped_bytes;
     volatile uint32_t uart_errors;
     volatile uint32_t receive_restarts;
+    volatile uint32_t receive_preflights;
+    volatile uint32_t start_retries;
+    volatile uint32_t last_hal_status;
+    volatile uint32_t last_hal_error;
 } AtlasUartTransportHealth;
 
 /**
@@ -65,9 +69,11 @@ AtlasStatus AtlasUartTransport_Init(AtlasUartTransport *transport,
                                     UART_HandleTypeDef *uart);
 
 /**
- * @brief Start receive-to-idle interrupt operation.
+ * @brief Clear stale hardware RX/error state and start receive-to-idle interrupts.
  * @param transport Initialized transport.
  * @return ATLAS_OK or a translated HAL failure.
+ * @note A bounded second arm is attempted if bytes arriving during the preflight
+ *       window recreate an overrun before the first arm completes.
  */
 AtlasStatus AtlasUartTransport_Start(AtlasUartTransport *transport);
 

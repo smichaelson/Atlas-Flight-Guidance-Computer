@@ -18,6 +18,18 @@ STATUS_NAMES = (
     "IDENTITY", "CRC", "PROTOCOL", "NACK", "OVERFLOW", "UNSUPPORTED", "STATE",
 )
 MODULES = ("adxl", "lsm", "mmc", "baro", "bno", "gnss", "ble", "radio")
+GNSS_FAILURE_STAGES = (
+    "none", "transport init", "transport start", "MON-VER write",
+    "MON-VER service", "MON-VER timeout", "timebase start",
+    "PPS capture start", "configuration write", "configuration readback",
+    "runtime service",
+)
+IO_REFERENCE_FAILURE_STAGES = (
+    "none", "ADC3 channel configuration", "ADC3 conversion start",
+    "ADC3 overrun", "ADC3 deadline", "ADC3 conversion poll",
+    "ADC3 conversion stop", "ADC3 raw range", "computed VDDA range",
+    "computed die-temperature range",
+)
 
 
 def _integer(value: object, low: int = 0, high: int = 0xFFFFFFFF) -> bool:
@@ -59,6 +71,7 @@ def validate(frame: object) -> dict:
     if kind == "hello":
         if (frame.get("profile") != "bringup" or not _integer(frame.get("schema"), 1, 1) or
                 frame.get("pwm_pyro_inhibited") is not True or
+                frame.get("led_inhibited") is not True or
                 not isinstance(frame.get("version"), str) or len(frame["version"]) > 32 or
                 not _array(frame.get("uid"), 3) or not _integer(frame.get("device_id")) or
                 not _integer(frame.get("clock_hz"), 1)):
@@ -85,9 +98,13 @@ def validate(frame: object) -> dict:
         required = {
             "adxl": ("t",), "lsm": ("t", "irq"), "mmc": ("t",), "baro": ("t",),
             "gnss": ("t", "frames", "crc_errors", "timeouts", "fix", "flags", "sv",
-                     "hacc_mm", "tow_ms", "pps_count", "pps_us"),
+                     "hacc_mm", "tow_ms", "pps_count", "pps_us", "failure_stage",
+                     "failure_status", "pps_started", "rx_bytes", "tx_bytes", "dropped",
+                     "uart_errors", "restarts", "preflights", "start_retries",
+                     "hal_status", "hal_error"),
             "power": ("start", "status", "t", "count", "valid", "vdda_mv", "adc_errors",
-                      "reset_flags", "power_events", "ecc_events"),
+                      "ref_stage", "ref_channel", "ref_raw", "ref_hal_status",
+                      "ref_hal_error", "reset_flags", "power_events", "ecc_events"),
             "gpio": ("inputs", "outputs", "switch", "pwm", "armed"),
             "sd": ("start", "card", "mounted", "status", "fs", "completed", "errors", "time_valid"),
             "ble": ("command", "dtr", "rx", "tx", "timeouts"), "radio": ("rx", "command"),
@@ -101,6 +118,40 @@ def validate(frame: object) -> dict:
         bno = frame.get("bno")
         if not isinstance(bno, dict):
             raise ValueError("Missing BNO reports")
+        bno_health = bno.get("health")
+        if bno_health is not None:
+            counter_keys = ("interrupts", "reads", "writes", "io_errors", "protocol_errors",
+                            "decoded", "decode_errors", "resets", "recovery_attempts",
+                            "recovery_failures", "last_hal_error")
+            if (not isinstance(bno_health, dict) or
+                    any(not _integer(bno_health.get(k)) for k in counter_keys) or
+                    not _integer(bno_health.get("last_hal_status"), 0, 3) or
+                    not _integer(bno_health.get("failure_stage"), 0, 9) or
+                    not _integer(bno_health.get("last_length"), 0, 1024) or
+                    not _integer(bno_health.get("pending_length"), 0, 1024) or
+                    not _integer(bno_health.get("intn_low"), 0, 1) or
+                    not _integer(bno_health.get("initialized"), 0, 1) or
+                    bno_health.get("recovery_failures", 1) >
+                    bno_health.get("recovery_attempts", 0)):
+                raise ValueError("Invalid bno.health object")
+        led = frame.get("led")
+        if (not isinstance(led, dict) or
+                not _integer(led.get("commanded"), 0, 0) or
+                not _integer(led.get("gates"), 0, 7) or
+                not _integer(led.get("initialized"), 0, 1) or
+                not _integer(led.get("inhibited"), 1, 1)):
+            raise ValueError("Invalid or uninhibited led object")
+        if (not _integer(frame["gnss"].get("failure_stage"), 0,
+                         len(GNSS_FAILURE_STAGES) - 1) or
+                not _integer(frame["gnss"].get("failure_status"), 0, 13) or
+                not _integer(frame["gnss"].get("pps_started"), 0, 1) or
+                not _integer(frame["gnss"].get("hal_status"), 0, 3)):
+            raise ValueError("Invalid GNSS diagnostic state")
+        if (not _integer(frame["power"].get("ref_stage"), 0,
+                         len(IO_REFERENCE_FAILURE_STAGES) - 1) or
+                not _integer(frame["power"].get("ref_channel"), 0, 1) or
+                not _integer(frame["power"].get("ref_hal_status"), 0, 3)):
+            raise ValueError("Invalid ADC3 reference diagnostic state")
         arrays = (("adxl", "mg", 3, True), ("lsm", "mg", 3, True),
                   ("lsm", "mdps", 3, True), ("mmc", "nt", 3, True),
                   ("bno", "count", 4, False), ("bno", "t", 4, False),
@@ -176,7 +227,7 @@ def valid_command(verb: str) -> bool:
         return True
     if verb in {f"probe {module}" for module in MODULES}:
         return True
-    if re.fullmatch(r"(?:led|gpio) [0-7]", verb):
+    if verb == "led 0" or re.fullmatch(r"gpio [0-7]", verb):
         return True
     if re.fullmatch(r"i2c [0-9]{1,3} [0-9]{1,3}", verb):
         _, address, register = verb.split()
@@ -315,8 +366,14 @@ def observations(s: dict) -> list[tuple[str, str, str, str]]:
                             ("mag_nt", 1000, "uT"), ("q_ppm", 1e6, "[w,x,y,z]"))[i]
         if state == "RESPONDING" and any(v is None for v in bno[key]):
             state = "INVALID DATA"
-        rows.append((name, state, str(age) if bno["count"][i] else "--",
-                     _values(bno[key], scale, unit) + f"; count {bno['count'][i]}, accuracy {bno['accuracy'][i]}"))
+        detail = _values(bno[key], scale, unit) + \
+                 f"; count {bno['count'][i]}, accuracy {bno['accuracy'][i]}"
+        if i == 0 and isinstance(bno.get("health"), dict):
+            h = bno["health"]
+            detail += (f"; I2C reads/writes {h['reads']}/{h['writes']}, errors {h['io_errors']}, "
+                       f"stage {h['failure_stage']}, HAL {h['last_hal_status']}/0x{h['last_hal_error']:08X}, "
+                       f"pending {h['pending_length']}, INTN {h['intn_low']}")
+        rows.append((name, state, str(age) if bno["count"][i] else "--", detail))
     g = s["gnss"]
     age = age_ms(s["ms"], g["t"])
     state = ("NOT TESTED" if not s["attempted"] & 32 else "FAILED" if any(s["init"][6:8]) else
@@ -324,7 +381,11 @@ def observations(s: dict) -> list[tuple[str, str, str, str]]:
              "FIX REPORTED" if g["flags"] & 1 and g["fix"] in (3, 4) else "RESPONDING / NO 3D FIX")
     rows.append(("GNSS + PPS", state, str(age) if g["frames"] else "--",
                  f"{g['sv']} satellites; fix {g['fix']}; NAV {g['frames']}; CRC {g['crc_errors']}; "
-                 f"PPS {g['pps_count']} / {g['pps_us']} us; {g['version']}"))
+                 f"PPS {g['pps_count']} / {g['pps_us']} us (started {g['pps_started']}); "
+                 f"stage {g['failure_stage']} {GNSS_FAILURE_STAGES[g['failure_stage']]} / status {g['failure_status']}; "
+                 f"UART RX/TX {g['rx_bytes']}/{g['tx_bytes']}, errors {g['uart_errors']}, "
+                 f"preflight/retry {g['preflights']}/{g['start_retries']}, "
+                 f"HAL {g['hal_status']}/0x{g['hal_error']:08X}; {g['version']}"))
     for module, init_index, bit in (("ble", 8, 64), ("radio", 9, 128)):
         part = s[module]
         state = "NOT TESTED" if not s["attempted"] & bit else "FAILED" if s["init"][init_index] else "TRANSPORT INITIALIZED"
@@ -342,7 +403,17 @@ def observations(s: dict) -> list[tuple[str, str, str, str]]:
              "INVALID DATA" if not p["valid"] & 1 else "RESPONDING")
     rails = "; ".join(f"{name}={p['mv'][i] / 1000:.3f} V" if p["valid"] & (1 << i) else f"{name}=invalid"
                       for i, name in enumerate(("3V3", "PWM", "5V", "VIN_PROT", "ARM")))
-    rows.append(("Power ADC (verify DMM)", state, str(age_ms(s["ms"], p["t"])) if p["count"] else "--", rails))
+    reference = (f"; ADC3 {IO_REFERENCE_FAILURE_STAGES[p['ref_stage']]} on "
+                 f"{'temperature' if p['ref_channel'] else 'VREFINT'}, raw {p['ref_raw']}, "
+                 f"HAL {p['ref_hal_status']}/0x{p['ref_hal_error']:08X}; "
+                 f"external ADC errors {p['adc_errors']}")
+    rows.append(("Power ADC (verify DMM)", state, str(age_ms(s["ms"], p["t"])) if p["count"] else "--",
+                 rails + reference))
+    led = s.get("led")
+    led_detail = (f"; RGB firmware-inhibited {led['inhibited']}, commanded/gates "
+                  f"0x{led['commanded']:X}/0x{led['gates']:X}"
+                  if isinstance(led, dict) else "")
     rows.append(("GPIO / switch", "OBSERVING" if p["available"] else "UNAVAILABLE", "--", f"IN bits 0x{s['gpio']['inputs']:02X}; "
-                 f"OUT commanded 0x{s['gpio']['outputs']:02X}; switch {s['gpio']['switch']}; HIGH requires loopback/scope"))
+                 f"OUT commanded 0x{s['gpio']['outputs']:02X}; switch {s['gpio']['switch']}"
+                 f"{led_detail}; HIGH requires loopback/scope"))
     return rows

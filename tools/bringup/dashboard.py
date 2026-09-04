@@ -117,10 +117,10 @@ class Dashboard:
 
     def _actions(self, parent: ttk.Frame) -> None:
         """@brief Build safe, explicit controls; optional fixtures have confirmations."""
-        self._buttons(parent, 0, "1 · Probe once per boot", [(m.upper(), f"probe {m}") for m in MODULES[:4]])
+        self._buttons(parent, 0, "1 · Module probes", [(m.upper(), f"probe {m}") for m in MODULES[:4]])
         self._buttons(parent, 1, "", [(m.upper(), f"probe {m}") for m in MODULES[4:7]])
-        self._buttons(parent, 2, "2 · Indicators", [("Channel 1", "led 1"), ("Channel 2", "led 2"),
-                      ("Channel 4", "led 4"), ("200 ms beep", "beep"), ("Indicators off", "stop")])
+        self._buttons(parent, 2, "2 · Buzzer / RGB inhibited",
+                      [("200 ms beep", "beep"), ("Stop / force RGB low", "stop")])
         self._buttons(parent, 3, "3 · SD card", [("Mount", "sd mount"), ("Read fixture", "sd read"),
                       ("NEW write / compare", "sd test"), ("Unmount", "sd unmount")])
         ttk.Button(parent, text="Set RTC to laptop UTC", command=self.utc).grid(row=4, column=1, sticky="w", pady=7)
@@ -138,8 +138,8 @@ class Dashboard:
         ttk.Button(row, text="Read one byte", command=self.i2c).pack(side="left")
         self._buttons(parent, 9, "Later · RFD900x", [("Transport init", "probe radio"), ("Read identity", "radio id"),
                       ("Transmit fixed text", "radio ping")])
-        ttk.Label(parent, text="One operation at a time. No automatic retry. See startup.md for fixtures, expected evidence and fault recovery.\n"
-                  "SD test refuses an existing ATLASCHK.TST. No format/erase command. There is deliberately no PWM/pyro enable or fire control.",
+        ttk.Label(parent, text="One operation at a time. No automatic retry; GNSS alone permits a deliberate manual retry after a reported failure. See startup.md for evidence and recovery.\n"
+                  "RGB outputs are firmware-inhibited. SD refuses overwrite/format. There is deliberately no PWM/pyro enable or fire control.",
                   wraplength=1000).grid(row=10, column=0, columnspan=2, sticky="w", pady=16)
 
     def refresh_ports(self) -> None:

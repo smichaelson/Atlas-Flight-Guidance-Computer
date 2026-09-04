@@ -24,12 +24,32 @@
 extern "C" {
 #endif
 
-#define ATLAS_BNO085_I2C_ADDRESS_7BIT (0x4BU)
+/**
+ * @brief Seven-bit I2C address selected by the Atlas rev-0.1 SA0 strap.
+ * @note U12 pin 17 (SA0/H_MOSI) is tied to ground, selecting 0x4A. STM32 HAL
+ *       master calls receive the left-shifted address value 0x94.
+ */
+#define ATLAS_BNO085_I2C_ADDRESS_7BIT (0x4AU)
 #define ATLAS_BNO085_MAX_SERVICE_READS (8U)
 
 /** @brief Callback receiving one successfully decoded SH-2 sensor value. */
 typedef void (*AtlasBno085SampleCallback)(void *context,
                                           const sh2_SensorValue_t *sample);
+
+/** @brief Stage of the most recent retained BNO085 transport failure. */
+typedef enum
+{
+    ATLAS_BNO085_FAILURE_NONE = 0,
+    ATLAS_BNO085_FAILURE_READ_HEADER,
+    ATLAS_BNO085_FAILURE_READ_TRANSFER,
+    ATLAS_BNO085_FAILURE_WRITE_TRANSFER,
+    ATLAS_BNO085_FAILURE_HEADER_LENGTH,
+    ATLAS_BNO085_FAILURE_TRANSFER_LENGTH,
+    ATLAS_BNO085_FAILURE_I2C_DEINIT,
+    ATLAS_BNO085_FAILURE_I2C_INIT,
+    ATLAS_BNO085_FAILURE_ANALOG_FILTER,
+    ATLAS_BNO085_FAILURE_DIGITAL_FILTER
+} AtlasBno085FailureStage;
 
 /** @brief Driver counters for transport and report diagnostics. */
 typedef struct
@@ -42,6 +62,12 @@ typedef struct
     uint32_t decoded_samples;
     uint32_t decode_errors;
     uint32_t async_resets;
+    uint32_t bus_recovery_attempts;
+    uint32_t bus_recovery_failures;
+    uint32_t last_hal_status;
+    uint32_t last_hal_error;
+    uint32_t last_failure_stage;
+    uint32_t last_transfer_length;
 } AtlasBno085Health;
 
 /** @brief BNO085 driver instance; the SH-2 HAL must remain the first member. */
@@ -56,6 +82,12 @@ typedef struct
     uint16_t interrupt_pin;
     uint16_t address_hal;
     volatile bool interrupt_pending;
+    volatile uint32_t interrupt_timestamp_us;
+    volatile bool interrupt_rearmed;
+    uint32_t pending_timestamp_us;
+    uint16_t pending_transfer_length;
+    bool transport_failed;
+    bool session_open;
     bool initialized;
     AtlasBno085SampleCallback sample_callback;
     void *sample_context;

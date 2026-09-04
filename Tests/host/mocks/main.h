@@ -11,6 +11,7 @@
 #ifndef ATLAS_TEST_MOCK_MAIN_H
 #define ATLAS_TEST_MOCK_MAIN_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum
@@ -44,7 +45,7 @@ typedef struct
     uint32_t Alternate;
 } GPIO_InitTypeDef;
 
-typedef struct { uint32_t unused; } I2C_HandleTypeDef;
+typedef struct { uint32_t ErrorCode; } I2C_HandleTypeDef;
 typedef struct { uint32_t unused; } SPI_HandleTypeDef;
 
 typedef struct
@@ -56,6 +57,7 @@ typedef struct
 {
     void *Instance;
     UART_InitTypeDef Init;
+    uint32_t ErrorCode;
 } UART_HandleTypeDef;
 
 typedef struct
@@ -108,6 +110,9 @@ typedef void (*AtlasTestUartTransmitHook)(UART_HandleTypeDef *uart,
 typedef void (*AtlasTestGpioWriteHook)(GPIO_TypeDef *port,
                                        uint16_t pin,
                                        GPIO_PinState state);
+/** @brief Optional callback invoked by the host GPIO input stub. */
+typedef GPIO_PinState (*AtlasTestGpioReadHook)(GPIO_TypeDef *port,
+                                               uint16_t pin);
 /** @brief Optional callback invoked by the host SPI transfer stub. */
 typedef HAL_StatusTypeDef (*AtlasTestSpiTransferHook)(SPI_HandleTypeDef *spi,
                                                       uint8_t *tx,
@@ -142,11 +147,14 @@ typedef HAL_StatusTypeDef (*AtlasTestI2cReceiveHook)(I2C_HandleTypeDef *i2c,
 #define RCC_HCLK_DIV2               (2U)
 #define UART_TXFIFO_THRESHOLD_1_8   (0U)
 #define UART_RXFIFO_THRESHOLD_1_8   (0U)
+#define I2C_ANALOGFILTER_ENABLE      (1U)
+#define GPIO_PIN_0                   (UINT16_C(1) << 0)
 #define GPIO_PIN_1                   (UINT16_C(1) << 1)
 #define GPIO_PIN_4                   (UINT16_C(1) << 4)
 #define GPIO_PIN_5                   (UINT16_C(1) << 5)
 #define GPIO_PIN_6                   (UINT16_C(1) << 6)
 #define GPIO_PIN_7                   (UINT16_C(1) << 7)
+#define GPIO_PIN_13                  (UINT16_C(1) << 13)
 #define GPIO_PIN_14                  (UINT16_C(1) << 14)
 #define GPIO_MODE_OUTPUT_PP          (1U)
 #define GPIO_NOPULL                  (0U)
@@ -169,6 +177,11 @@ typedef HAL_StatusTypeDef (*AtlasTestI2cReceiveHook)(I2C_HandleTypeDef *i2c,
 #define LED_G_GPIO_Port              (&atlas_test_gpio_b)
 #define LED_B_Pin                    GPIO_PIN_14
 #define LED_B_GPIO_Port              (&atlas_test_gpio_d)
+
+#define BNO085_H_INTN_Pin            GPIO_PIN_0
+#define BNO085_H_INTN_GPIO_Port      (&atlas_test_gpio_g)
+#define BNO085_NRST_Pin              GPIO_PIN_13
+#define BNO085_NRST_GPIO_Port        (&atlas_test_gpio_b)
 
 #define __DMB()                     do { } while (0)
 #define __disable_irq()             do { } while (0)
@@ -196,6 +209,13 @@ HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *i2c,
                                          uint8_t *data,
                                          uint16_t length,
                                          uint32_t timeout_ms);
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *i2c);
+HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *i2c);
+HAL_StatusTypeDef HAL_I2CEx_ConfigAnalogFilter(I2C_HandleTypeDef *i2c,
+                                                uint32_t enable);
+HAL_StatusTypeDef HAL_I2CEx_ConfigDigitalFilter(I2C_HandleTypeDef *i2c,
+                                                 uint32_t coefficient);
+uint32_t HAL_I2C_GetError(I2C_HandleTypeDef *i2c);
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *spi,
                                           uint8_t *tx,
                                           uint8_t *rx,
@@ -231,9 +251,21 @@ void AtlasTest_ResetTimerTrace(void);
 uint32_t AtlasTest_GetTimerMode(uint32_t channel);
 uint32_t AtlasTest_GetTimerStartedMask(void);
 void AtlasTest_SetUartTransmitHook(AtlasTestUartTransmitHook hook);
+void AtlasTest_ResetUartReceiveTrace(void);
+void AtlasTest_SetUartStaleReceive(bool stale);
+void AtlasTest_SetUartArmFailures(uint32_t failures);
+uint32_t AtlasTest_GetUartAbortCount(void);
+uint32_t AtlasTest_GetUartArmCount(void);
 void AtlasTest_SetGpioWriteHook(AtlasTestGpioWriteHook hook);
+void AtlasTest_SetGpioReadHook(AtlasTestGpioReadHook hook);
 void AtlasTest_SetSpiTransferHook(AtlasTestSpiTransferHook hook);
 void AtlasTest_SetI2cHooks(AtlasTestI2cTransmitHook transmit_hook,
                            AtlasTestI2cReceiveHook receive_hook);
+void AtlasTest_ResetI2cTrace(void);
+uint32_t AtlasTest_GetI2cDeinitCount(void);
+uint32_t AtlasTest_GetI2cInitCount(void);
+uint32_t AtlasTest_GetI2cAnalogFilterCount(void);
+uint32_t AtlasTest_GetI2cDigitalFilterCount(void);
+uint32_t AtlasTest_GetI2cDeinitWhileBnoResetCount(void);
 
 #endif /* ATLAS_TEST_MOCK_MAIN_H */

@@ -1,12 +1,13 @@
 /**
  * @file atlas_led.h
- * @brief Active-high transistor-driven RGB status LED firmware for Atlas.
+ * @brief Hardware-inhibited RGB LED interface for Atlas rev-0.1.
  *
  * Major functions:
- * - AtlasLed_Init(): takes GPIO ownership from TIM4 staging and forces a known off state.
- * - AtlasLed_SetRgb(): controls each physical color channel explicitly.
- * - AtlasLed_SetColor(): selects one of the eight binary RGB combinations.
- * - AtlasLed_Off(): removes drive from all three low-side transistors.
+ * - AtlasLed_Init(): takes GPIO ownership from TIM4 staging and forces all channels low.
+ * - AtlasLed_SetRgb(): rejects every non-off request while preserving the fail-dark state.
+ * - AtlasLed_SetColor(): validates a mask and routes it through the hardware inhibit.
+ * - AtlasLed_ReadGateMask(): samples the three legacy MCU control nets for diagnostics.
+ * - AtlasLed_Off(): unconditionally writes all three channel nets low.
  */
 
 #ifndef ATLAS_LED_H
@@ -22,7 +23,14 @@
 extern "C" {
 #endif
 
-/** @brief Binary RGB colors supported by the GPIO-driven LED. */
+/**
+ * @brief Compile-time safety boundary for the as-built rev-0.1 Q6-Q8 mismatch.
+ * @note Do not set this to zero. Re-enabling RGB output requires qualified PCB
+ *       rework/revision evidence and an explicit firmware safety review.
+ */
+#define ATLAS_LED_HARDWARE_INHIBITED (1U)
+
+/** @brief Legacy binary RGB request encodings; only OFF is supported on rev-0.1. */
 typedef enum
 {
     ATLAS_LED_OFF = 0x00,
@@ -40,38 +48,50 @@ typedef struct
 {
     AtlasLedColor color;
     bool initialized;
+    bool output_inhibited;
 } AtlasLed;
 
 /**
- * @brief Bind the fixed Atlas RGB channels and force the LED off.
+ * @brief Bind the fixed Atlas RGB channel nets and force them all low.
  * @param led Destination LED instance.
- * @return ATLAS_OK or ATLAS_ERROR_NULL.
+ * @return ATLAS_OK, ATLAS_ERROR_NULL, or ATLAS_ERROR_IO on low-pin mismatch.
  * @note Reconfigures PB6, PB7, and PD14 from CubeMX TIM4 staging to GPIO outputs.
  */
 AtlasStatus AtlasLed_Init(AtlasLed *led);
 
 /**
- * @brief Set the three physical LED channels.
+ * @brief Request three physical LED channels through the mandatory inhibit.
  * @param led Initialized LED instance.
  * @param red true to illuminate red.
  * @param green true to illuminate green.
  * @param blue true to illuminate blue.
- * @return ATLAS_OK or a typed readiness failure.
- * @note MCU-high turns a channel on despite the package being common-anode.
+ * @return ATLAS_OK only for an off request with verified-low pins;
+ *         ATLAS_ERROR_UNSUPPORTED for any on request, or another typed failure.
+ * @note This API never writes a channel high on the affected PCB revision.
  */
 AtlasStatus AtlasLed_SetRgb(AtlasLed *led, bool red, bool green, bool blue);
 
 /**
- * @brief Set one enumerated binary RGB color.
+ * @brief Request one enumerated RGB mask through the mandatory inhibit.
  * @param led Initialized LED instance.
  * @param color Valid AtlasLedColor bit combination.
- * @return ATLAS_OK or a typed argument/readiness failure.
+ * @return ATLAS_OK only for ATLAS_LED_OFF with verified-low pins;
+ *         ATLAS_ERROR_UNSUPPORTED for a valid nonzero color.
  */
 AtlasStatus AtlasLed_SetColor(AtlasLed *led, AtlasLedColor color);
 
 /**
- * @brief Turn all RGB channels off.
- * @param led Initialized LED instance; NULL is ignored.
+ * @brief Read the electrical logic level at all three legacy MCU control pins.
+ * @param led LED instance; initialization is not required for diagnostic sampling.
+ * @return AtlasLedColor-compatible high-level mask, or zero for NULL.
+ * @note On rev-0.1 these nets reach the MOSFETs' physical source terminals, not
+ *       their gates. Readback cannot prove 5V_SYS, drain current, or emitted light.
+ */
+uint8_t AtlasLed_ReadGateMask(const AtlasLed *led);
+
+/**
+ * @brief Force all RGB channel nets low, regardless of initialization state.
+ * @param led LED instance; NULL is ignored after the unconditional low writes.
  */
 void AtlasLed_Off(AtlasLed *led);
 

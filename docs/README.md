@@ -20,7 +20,7 @@ New collaborators normally need only **Quick start + Systems**. Bench operators 
 
 | Motion and environment | Navigation and links | Feedback |
 |---|---|---|
-| [ADXL375 high-g accelerometer](reference/modules/ADXL375.md) | [NEO-M9N GNSS / GPS](reference/modules/GNSS.md) | [RGB LED](reference/modules/LED.md) |
+| [ADXL375 high-g accelerometer](reference/modules/ADXL375.md) | [NEO-M9N GNSS / GPS](reference/modules/GNSS.md) | [RGB LED — hardware inhibited](reference/modules/LED.md) |
 | [LSM6DSV16B IMU](reference/modules/LSM6DSV16B.md) | [NINA-B112 BLE](reference/modules/BLE.md) | [Differential buzzer](reference/modules/BUZZER.md) |
 | [MMC5983MA magnetometer](reference/modules/MMC5983MA.md) | [RFD900x radio — J9 “LoRa” label](reference/modules/RFD900X.md) | |
 | [MS5611 barometer](reference/modules/MS5611.md) | | |

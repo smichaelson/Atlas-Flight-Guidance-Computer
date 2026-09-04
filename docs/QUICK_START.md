@@ -35,7 +35,7 @@ pwsh -NoProfile -File Tests/repository/check_repository.ps1
 
 | Check | Expected result | Scope |
 |---|---|---|
-| Host suite | Pass | Sensor register/math, UBX/AT profiles, UART, indicators and pure RTOS policy |
+| Host suite | Pass | Sensor register/math, UBX/AT profiles, stale-UART recovery, hard-inhibited RGB/buzzer and pure RTOS policy |
 | Review probes | Pass | Shared timer, minimum waits, GNSS recovery, real SD/FatFs integration on a RAM volume, analog and pyro policy |
 | Service models | Pass | Output fault boundaries, real USB core/class, USB lifecycle, storage/RTC owner, expansion queues and zero-heap boundary |
 | Bring-up suite | Pass | Strict console, actual C-to-Python JSON, diagnostic output denial, exclusive SD test, dashboard/fixture models and hidden UI smoke test |
@@ -45,7 +45,7 @@ A nonzero exit is a failure, not an expected red baseline. The review runner use
 
 ## 3. Understand stock startup before connecting hardware
 
-- Sensor identity/configuration probes run before scheduling. GNSS and BNO085 share an idempotently started TIM2; neither resets the other's timebase.
+- Sensor identity/configuration probes run before scheduling. GNSS clears stale USART RX, proves `MON-VER`, and then joins BNO085 on an idempotently started TIM2; neither resets the other's timebase.
 - ADC/voltage/input monitoring runs without output qualification. Invalid readings remain marked invalid.
 - Storage makes a read-only boot mount attempt. Absence or an invalid filesystem is nonfatal to unrelated services. No boot log, formatting or deletion occurs.
 - USB exposes its pull-up only after stable VBUS; transmission requires enumeration. It is a bounded byte transport, **not a supplied console or command interpreter**.
@@ -60,7 +60,7 @@ Keep J5 open. Disconnect igniters, motors, servos and other energetic loads; use
 2. Break after `AtlasBoard_Init()`, before IWDG startup, and inspect each `atlas_board.init` result. Preserve first-failure evidence.
 3. Under scheduling, inspect `AtlasRtos_GetHealth()`, sensor timestamps and `AtlasIo_GetSnapshot()`. Required sensor/ADC/service faults inhibit outputs and withhold watchdog refresh; do not bypass this to keep a broken setup running.
 4. Inspect optional USB/storage health independently. Their absence is not a flight-control watchdog fault.
-5. Treat the logical LED state as a startup hint only. Its green/blue schematic mapping remains unresolved.
+5. Require PB6/PB7/PD14 to remain low. The rev-0.1 Q6-Q8 footprint/terminal mismatch is confirmed; version 1.0.2 removes startup colors, rejects every nonzero LED request, and requires inhibit telemetry. Do not attempt illumination before approved hardware correction and requalification.
 
 No firmware was flashed during the correction review. Hardware acceptance is a separate, explicit activity.
 

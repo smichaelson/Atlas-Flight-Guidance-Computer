@@ -49,9 +49,9 @@ Addresses below are seven-bit I2C addresses; the HAL adapter applies the require
 | MMC5983MA U9 | SPI2; CS PG11 | On-demand conversion, 200 Hz bandwidth code |
 | SPI3 bus / LSM6DSV16B U27 | PB3 SCK, PB4 MISO, PB2 MOSI; IMU CS PG10, INT1 PG2 | Mode 3, nominal 3.125 MHz; INT2 at TP11 |
 | I2C1 bus | PB8 SCL, PB9 SDA | Shared BNO085/MS5611; external pull-ups |
-| BNO085 U12 | I2C1 `0x4B`; reset PB13, active-low interrupt PG0 | Four SH-2 reports; shares TIM2 timebase with GNSS |
+| BNO085 U12 | I2C1 `0x4A`; reset PB13, active-low interrupt PG0 | SA0/H_MOSI is strapped low; four SH-2 reports; shares TIM2 timebase with GNSS |
 | MS5611 U14 | I2C1 `0x77` | PROM/CRC, compensated D2/D1 conversion |
-| NEO-M9N U23 | USART1 MCU TX PB14 / RX PB15; PPS PA15 TIM2 CH1 | 38400 8N1 host; intended RAM-only 10 Hz NAV-PVT; external antenna J27 |
+| NEO-M9N U23 | USART1 MCU TX PB14 / RX PB15; PPS PA15 TIM2 CH1 | 38400 8N1 host; stale-RX preflight before `MON-VER`; intended RAM-only 10 Hz NAV-PVT; external antenna J27; reset not MCU-routed |
 | NINA-B112 U21 | USART6 MCU TX PG14 / RX PG9, RTS PG8 / CTS PG15 | 115200 8N1 RTS/CTS; reset PD4, SWITCH1 PG5, SWITCH2 PG4, module DSR driven PG6, DTR observed PE1 |
 | RFD900x J9 | USART3 MCU TX PD8 / RX PB11; 5 V and ground | 115200 8N1 host; no routed radio hardware flow control |
 | microSD | SDMMC1 D0–D3 PC8–PC11, CK PC12, CMD PD2; detect PD3 | One-bit initialization then four-bit / 25 MHz polling; PD3 active-low mechanical J3 detect |
@@ -86,21 +86,22 @@ TIM15's nominal 4.8 kHz request rounds to 208 counter counts (about 4807.7 Hz). 
 | Armed bus | Rank 5 / IN17 / PA1 | 820 kΩ / 100 kΩ divider |
 | Continuity 1–5 | Ranks 6–10 / PA2, PA3, PA4, PA6, PC4 | 470 kΩ feed, 100 kΩ return, 10 nF filtering |
 
-The output owner calibrates both ADCs. ADC1 uses a completed-only ten-rank scan in AXI SRAM; ADC3 uses separate single-rank VREFINT and temperature conversions. Runtime overrides the generator's original ADC3 sequencing. Divider ratios, reference/offset, settling, tolerances and safe diagnostic current require assembled-board validation. Do not derive firing permission from nominal divider arithmetic.
+The output owner calibrates both ADCs. ADC1 uses a completed-only ten-rank scan in AXI SRAM; ADC3 uses separate single-rank VREFINT and temperature conversions. Runtime overrides the generator's original ADC3 sequencing. The snapshot and bring-up status retain the first ADC3 operation/channel/raw/HAL failure independently from the external ADC1/DMA error count. Those diagnostics localize a software/hardware boundary but do not qualify reference accuracy. Divider ratios, reference/offset, settling, tolerances and safe diagnostic current require assembled-board validation. Do not derive firing permission from nominal divider arithmetic.
 
 J5 has no independent digital contact sensor. The qualified armed-feed voltage is a supply-present proxy, not proof that a safe arm link/load is fitted. Continuity is UNKNOWN without that supply and during firing. The ADC equivalent drain multiplier is 5.7; the armed-supply multiplier is 9.2. Thresholds are application-supplied only after measurement; no qualified defaults exist.
 
-## LED mapping conflict
+## RGB LED hardware defect and mandatory inhibit
 
-The low-side transistor gates are active-high despite the common-anode package. The following is the **schematic mapping**, not a measured as-built color assignment:
+The board owner confirmed the D5 orientation, then identified the controlling defect in the raw KiCad design on 2026-09-04. The fitted Q6/Q7/Q8 type is DMN3404L-7, whose SOT-23 terminals are pin 1 gate, pin 2 source, and pin 3 drain. The PCB routing instead sends the intended LED load to transistor pad 1, MCU control through 220 Ω to pad 2, and ground to pad 3. Thus all three intended low-side stages have gate/source/drain assigned to the wrong physical terminals. D5 orientation or a software color swap cannot correct this.
 
-| Software name / GPIO | Schematic path | D5 channel shown |
+| Legacy control / intended channel | Affected transistor path | Rev-0.1 result |
 |---|---|---|
-| `LED_R` / PB6 | R105 → Q8 → D5 pin 2 | Red |
-| `LED_G` / PB7 | R101 → Q7 → D5 pin 4 | Blue |
-| `LED_B` / PD14 | R103 → Q6 → D5 pin 3 | Green |
+| PB6 `LED_R` / red | R106 → Q8 → R105/D5 | MCU drives pad 2/physical source; load reaches pad 1/physical gate; pad 3/physical drain is grounded |
+| PB7 `LED_G` / green | R102 → Q7 → R101/D5 | Same terminal mismatch |
+| PD14 `LED_B` / blue | R104 → Q6 → R103/D5 | Same terminal mismatch |
+| `5V_SYS` / common anode | D5 supply | A correct anode supply does not repair the invalid switches |
 
-The green and blue names therefore conflict with the symbol's color pins. Firmware is deliberately not remapped without exact-part/as-built evidence. Verify the exact fitted LED pinout and each channel with an inert bench test before correcting the schematic, labels, firmware, or color-based instructions. Until then, identify startup state by enum/GPIO and debugger report, not perceived color.
+Version 1.0.2 permanently treats PB6/PB7/PD14 as fail-dark outputs on this revision: initialization writes and verifies low, board startup has no color indications, nonzero requests are unsupported, and the updated dashboard requires explicit LED-inhibit telemetry. Do not drive these nets high or perform further illumination tests until approved hardware rework/a corrected PCB revision is electrically inspected and qualified. See the dedicated [RGB LED guide](modules/LED.md).
 
 ## Verification boundary
 

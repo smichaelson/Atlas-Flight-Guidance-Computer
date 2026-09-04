@@ -2,7 +2,7 @@
 
 Purpose: take an **assembled STM32H743ZIT6 Atlas board** from unpowered inspection to measured, logged peripheral operation. This is the dedicated bench procedure; you do not need to read ten device guides first.
 
-Major functions covered: build the inhibited diagnostic image; enter STM32 factory USB DFU; program and verify flash; connect the local dashboard; test power, GPIO, indicators, sensors, RTC, SD, BLE and GNSS; diagnose failures; preserve evidence. Optional external-bus/radio tests come last. **PWM and pyro actuation are unavailable in this image, including through their normal public command APIs.**
+Major functions covered: build the inhibited diagnostic image; enter STM32 factory USB DFU; program and verify flash; connect the local dashboard; test power, GPIO, buzzer, sensors, RTC, SD, BLE and GNSS; diagnose failures; preserve evidence. Optional external-bus/radio tests come last. **RGB, PWM and pyro actuation are unavailable in this image; the confirmed rev-0.1 Q6-Q8 LED defect is held low in software.**
 
 The software has build/model-test evidence, not measurements from your PCB. Stop at an unmet physical gate. A responding sensor, a green row, or an `OK` reply is not electrical, calibration, deployment or flight qualification.
 
@@ -174,9 +174,9 @@ From the repository root:
 ```
 
 1. Select **Refresh ports**, choose the Atlas application's COM port explicitly, then **Connect**. No port opens automatically. Only one terminal/dashboard may own it.
-2. Opening asserts CDC DTR and should produce a schema-1 `hello`: profile `bringup`, version `1.0.0`, `pwm_pyro_inhibited:true`, device UID and nominal CPU 200 MHz. **Identify** requests this again. Never proceed on an unrecognized profile. `hello`/`status` requests exercise both USB directions without probing sensors.
+2. Opening asserts CDC DTR and should produce a schema-1 `hello`: profile `bringup`, version `1.0.2`, both `pwm_pyro_inhibited:true` and `led_inhibited:true`, device UID and nominal CPU 200 MHz. The updated dashboard rejects an older image that can still command RGB high. **Identify** requests the handshake again. Never proceed on an unrecognized profile. `hello`/`status` requests exercise both USB directions without probing sensors.
 3. The status stream is nominally 2 Hz. Initially the sensor rows should be NOT TESTED; analog/input monitoring is already running. Lack of GPS fix, missing radio/card, and unprobed devices are not startup failure by themselves.
-4. Tick the power/load checklist only after the physical steps above. Buttons issue one operation at a time. Each module probe is permitted **once per MCU boot**, including a failed attempt; repeated probe returns STATE rather than reinitializing a live transport. Correct wiring with power OFF, then cold-start for another attempt.
+4. Tick the power/load checklist only after the physical steps above. Buttons issue one operation at a time. ADXL, LSM, MMC, barometer, BNO, BLE and radio probes are permitted **once per MCU boot**, including a failed attempt. GNSS is the sole exception: after a completed failure, another explicit click safely stops/flushes its UART and retries; if identity passed but RAM configuration failed, only configuration is retried. There is no automatic retry or replay.
 5. In **Raw evidence & notes**, start a **new** log if desired. Logging never overwrites a file and stops at 100 MiB or a disk error. Logs include UID, UTC and GNSS position: keep them private and out of Git. Enter DMM, scope and peer observations as bench notes. Starting a log late does not recover earlier frames.
 
 The table distinguishes NOT TESTED, NO SAMPLES, RESPONDING, STALE, FAILED, transport initialization and reported GNSS fix. Read the actual command reply in the event log as well. “Transport initialized” for the external radio proves only that its MCU UART driver started. GPIO `outputs` are **commanded bits**, not measured connector voltages. SD “mounted” does not prove a successful write/readback. BLE AT identity does not prove RF communication.
@@ -185,14 +185,32 @@ Host telemetry older than 2.5 s is stale; commands that change device state requ
 
 ## 6. Initial tests in order
 
-### A. Power, USB, indicators and inputs
+### A. Power, USB, inhibited RGB, buzzer and inputs
 
 - Watch `power.count` and timestamps advance with valid channels. Compare reported 3V3/PWM/5V/VIN_PROT against the DMM; record both and resolve divider/reference error rather than treating ADC output as the standard. `vdda_mv` and die temperature must be plausible. AUX 3V3 and auxiliary connector outputs still require their own meter checks; there is no separate AUX ADC rank.
+- Stop this acceptance section if `power.status` is nonzero or `power.count` remains zero. The 2026-09-04 version 1.0.1 evidence has exactly that separate fault (`status=IO`, zero samples, zero external-ADC errors); it does not prove bad rails and must not be conflated with the GNSS failure. Version 1.0.2 deliberately leaves all ADC conversion and acceptance policy unchanged, but adds the retained `ref_stage`, `ref_channel`, `ref_raw`, `ref_hal_status`, and `ref_hal_error` fields below. Preserve the complete new frame and DMM values before power-cycle or code changes.
 - The ten ADC channels are ordered **3V3, PWM supply, 5V, VIN_PROT, ARM supply, continuity 1, 2, 3, 4, 5**. `valid` bit *i* qualifies `mv[i]`. Zero voltage is not proof of an open lead or absence of a short. With J5 open, continuity/arm qualification remains unknown and no firing inference is permitted.
-- Use LED **Channel 1**, **2**, **4** individually, then **Indicators off**. Record physical colors. Logical bits are R/PB6, G/PB7, B/PD14, but the schematic's green/blue symbol mapping conflicts with those names. Startup LED color is not a hardware-pass certificate.
-- Request the short beep once. Verify differential drive on PE5/PE6 and expected sound, then Indicators off. The requested duration is 200 ms at nominal 4.8 kHz; its owner-serviced expiry can extend during a stalled bus operation. Do not accept timing solely from the request value.
+- Do **not** attempt to illuminate D5. The raw-design review confirmed that each DMN3404L Q6-Q8 footprint routes the intended load/control/ground to the wrong physical gate/source/drain terminals. Require `led.inhibited=1`, `led.commanded=0`, and normally `led.gates=0`. Measure PB6/PB7/PD14 only to confirm they remain near 0 V through startup and later commands; never command or manually force them high. See the [hardware-inhibited LED guide](reference/modules/LED.md).
+- Request the short beep once. Verify differential drive on PE5/PE6 and expected sound, then use **Stop / force RGB low**. The requested duration is 200 ms at nominal 4.8 kHz; its owner-serviced expiry can extend during a stalled bus operation. Do not accept timing solely from the request value.
 - Toggle SW2 and observe `gpio.switch`. Input bits 0–6 represent IN1–IN7. Initial general outputs, PWM mask and software-armed flag must be zero. Scope the disconnected PWM/pyro signal/gate pins during reset/startup if accepting their passive state; this image cannot drive them HIGH deliberately.
 - Press Identify and confirm a matching successful reply and increasing USB byte counters. Disconnect/reconnect once with no command pending: expect a new handshake and fresh data, never replayed tests. USB RX/TX drops and timeouts should not keep increasing in a healthy steady connection.
+
+ADC3 reference diagnostics use the following retained stage values. Stage zero means no failure; in that case `ref_channel` and `ref_raw` describe the latest completed reference sample rather than an error. For a nonzero stage, `ref_channel=0` means VREFINT and `ref_channel=1` means the internal temperature sensor.
+
+| `ref_stage` | First failed ADC3 operation |
+|---:|---|
+| 0 | None |
+| 1 | Channel configuration |
+| 2 | Conversion start |
+| 3 | Hardware overrun flag |
+| 4 | 20 ms conversion deadline |
+| 5 | HAL conversion poll |
+| 6 | Conversion stop |
+| 7 | Raw sample outside the guarded range |
+| 8 | Computed VDDA outside 2800–3600 mV |
+| 9 | Computed die temperature outside −50 to 150 °C |
+
+`ref_hal_status` is the retained HAL result (0 OK, 1 ERROR, 2 BUSY, 3 TIMEOUT), and `ref_hal_error` is the ADC3 handle error mask at that point. `adc_errors` remains the **external ADC1/DMA scan** counter. These fields localize a failure; they do not prove whether its root cause is power, clock, calibration, configuration, silicon state, or assembly.
 
 ### B. Onboard sensors — one explicit probe at a time
 
@@ -204,7 +222,7 @@ Wait for each reply and continuing samples before proceeding. Leave the board st
 | LSM / `probe lsm` | Accel/gyro samples and INT1 counter increase; roughly 1 g at rest, gyro near its stationary bias, signed rate changes with deliberate rotation; record axes and temperature |
 | MMC / `probe mmc` | Field count increases; XYZ magnetic field changes with orientation, away from steel/tools/current loops. Values display in µT. This is not a hard/soft-iron calibration |
 | BARO / `probe baro` | PROM CRC/init OK; pressure/temperature update and are plausible against a local reference. Altitude/weather affect pressure; 101325 Pa is not a universal acceptance target. Do not blow liquid/moisture into the sensor |
-| BNO / `probe bno` | Identity and all four report enables OK; **each** accel, gyro, magnetic and quaternion count/timestamp advances. Check gravity, rate sign and quaternion norm near one. Accuracy status is separate from packet reception |
+| BNO / `probe bno` | Version 1.0.2 retains the proven seven-bit `0x4A` (STM32 HAL `0x94`) and CEVA two-interrupt header/continuation correction. Identity and all four report enables must return OK; **each** accel, gyro, magnetic and quaternion count/timestamp must advance. Require `bno.health.io_errors=0`, `protocol_errors=0`, `pending_length` returning to zero, and continuing barometer samples. Check gravity, rate sign and quaternion norm near one. Accuracy status is separate from packet reception |
 
 Discrete sensor polling is deliberately slower than a flight acquisition design: ADXL/LSM nominal 5 ms, MMC 100 ms, barometer 200 ms, with latest-value publication. BNO requests 100/100/50/100 Hz reports. These are scheduling requests, not guaranteed lossless sample rates. One failed module remains reported while the diagnostic owner continues servicing others; a hung task still faults supervision.
 
@@ -247,7 +265,24 @@ If the fitted firmware applies an advertising/service change only after persiste
 
 With power OFF, attach a suitable GNSS antenna to **J27 SMA**, checking compatibility with the schematic's VCC_RF/L5 bias feed; do not attach an incompatible DC-short or externally powered arrangement blindly. GNSS is powered from 3V3_AUX through FB4. TP12 SAFEBOOT stays untouched.
 
-After normal startup, `probe gnss` must return identity plus RAM-configuration/readback success. Record the MON-VER text. The default interface is USART1 PB14 TX / PB15 RX, 38400 8N1; the requested output is 10 Hz UBX NAV-PVT. A receiver previously commissioned to another stored baud/profile can legitimately fail this initial exchange.
+After normal startup, `probe gnss` must return identity plus RAM-configuration/readback success. Record the MON-VER text. The default interface is USART1 PB14 TX / PB15 RX, 38400 8N1; the receiver normally emits NMEA at power-up and accepts UBX input. Version 1.0.2 first aborts/flushes stale receive/error state, arms receive-to-idle with one bounded race retry, and sends the side-effect-free MON-VER poll every 250 ms within a single 3 s identity window. Only after identity does it start PPS and request 10 Hz UBX NAV-PVT. A receiver previously commissioned to another stored baud/profile can legitimately fail this initial exchange.
+
+On success require `init[6]=0`, `init[7]=0`, nonempty `gnss.version`, `failure_stage=0`, `failure_status=0`, `pps_started=1`, `tx_bytes>0`, and increasing `rx_bytes`/NAV frames. One `preflights` count is normal; `start_retries=1` means bytes raced the first arm and the bounded recovery was used. A navigation fix is **not** required to prove the local UART/configuration path.
+
+On failure, preserve the entire status frame before retrying. Interpret the retained stage first:
+
+| Stage | Meaning and next evidence |
+|---:|---|
+| 1–2 | UART transport registration/start. Inspect `hal_status`, hexadecimal `hal_error`, preflight/retry counts, USART1 IRQ setup and PB14/PB15 electrical state |
+| 3 | MON-VER transmit failed. `tx_bytes` and a scope on MCU TX PB14 → U23 RXD pin 21 distinguish a local HAL result from a real waveform |
+| 4–5 | Receive service failed or no checksum-valid MON-VER arrived within the bounded 3 s window. Compare `rx_bytes`, UART errors/drops and a 38400-baud capture on U23 TXD pin 20 → MCU PB15 |
+| 6–7 | Identity succeeded, but shared timebase or PA15/TIM2 channel-1 capture startup failed |
+| 8–9 | Identity succeeded, but RAM VALSET/ACK or VALGET readback failed; retain version, frame and timeout evidence |
+| 10 | Runtime UART/parser service failed after initialization |
+
+If `rx_bytes=0` while `tx_bytes` advanced, power down and verify 3V3_AUX at U23 VCC/V_BCKP/VDD_USB, common ground, TP12 SAFEBOOT_N not held low, U23 TXD-to-PB15 continuity, and idle-high/38400 traffic. If bytes arrive but stage 5 remains, check baud/framing, PB14-to-U23 RXD continuity, waveform levels, drops/errors and whether the receiver has a non-default persistent configuration. U23 reset is not MCU-routed on rev-0.1, so a true receiver cold reset requires a controlled board power cycle. Do not pull TP12 low as a recovery experiment.
+
+After one fully completed failure, correct only safe wiring/power conditions and issue one deliberate `probe gnss` again. The retry is not automatic. A second `STATE` reply after a failed probe suggests the old 1.0.1 image or a mismatched dashboard; after complete success, `STATE` is expected because no reinitialization is needed.
 
 Check NAV frame count/timestamps first; **valid messages with no fix indoors still prove transport**. For navigation acceptance, move to a stationary clear-sky location while maintaining a safe grounded/powered setup. Require a continuing valid 3D fix (fix type 3 or 4 with flags bit 0 set), plausible satellite count/location/height and horizontal accuracy appropriate to your test. Compare coordinates with a known reference; a fixed number of satellites alone is insufficient.
 
@@ -297,7 +332,7 @@ The normal firmware has [qualified output services](PERIPHERALS.md#output-config
 
 ## 8. Shutdown, soak and recovery
 
-For an ordinary shutdown: wait for the current reply, request Indicators off and All GPIO low, **Unmount** SD and verify completion, close/disconnect the dashboard, unplug USB, then turn the main supply OFF. Verify discharge before changing jumpers, cards or wiring. USB must not back-power an otherwise unpowered board through the data/detect circuitry.
+For an ordinary shutdown: wait for the current reply, request **Stop / force RGB low** and **All GPIO low**, **Unmount** SD and verify completion, close/disconnect the dashboard, unplug USB, then turn the main supply OFF. Verify discharge before changing jumpers, cards or wiring. USB must not back-power an otherwise unpowered board through the data/detect circuitry.
 
 After individual tests, run a supervised **10-minute initial soak** with the intended initial modules online, repeated fresh sensor/GNSS data, BLE peer exchange and explicit SD tests as appropriate. Retain current/rail/thermal readings, resets, drop/error counters and free stack words. This duration is a practical first check, not a reliability qualification. Do not leave a newly powered board unattended. Never force a brownout/short or remove a card mid-write merely to exercise an error path.
 
@@ -310,11 +345,15 @@ After individual tests, run a supervised **10-minute initial soak** with the int
 | DFU works but application CDC does not | Verify bring-up HEX/address and cold power cycle; clocks/HAL startup/faults may precede USB; inspect with SWD |
 | COM opens but no telemetry | Close other clients, use real diagnostic image and assert DTR; Identify; inspect VBUS and USB counters |
 | GUI says stale/blocked | Treat displayed measurements as historical; preserve log, inspect target status, reconnect manually. Do not repeat an uncertain write |
-| Probe returns STATE | Module already attempted this boot, wrong operating mode, or safety/state gate. Inspect `attempted`, `init`, pending ID and reply |
+| Probe returns STATE | An ordinary module already attempted this boot, GNSS already succeeded, wrong operating mode, or another state gate. A failed GNSS is retryable only in 1.0.2. Inspect `attempted`, `init`, version/handshake, pending ID and reply |
 | Sensor identity/I/O/CRC failure | Check its local supply, CS/reset/interrupt, bus pins/pulls, fitted part/address and waveform. Fix with power OFF; fresh boot before another probe |
+| BNO fails and barometer stops | Retain `bno.health` and barometer counters. Version 1.0.2 should hold U12 reset and increment `recovery_attempts`; require `recovery_failures=0` and fresh barometer samples afterward. If not, power down and scope I2C1 SCL/SDA plus H_INTN; do not repeatedly probe in one boot |
+| RGB field is not inhibited/zero | Stop using that image or power down on a nonzero pin readback. Version 1.0.2 must advertise the inhibit and never command PB6/PB7/PD14 high. Do not test around the confirmed Q6-Q8 defect |
+| `power.status` nonzero / no samples | Preserve `ref_stage/channel/raw/hal_status/hal_error`, `adc_errors`, reset/fault fields and DMM rails. Use the stage table in section 6A; do not alter scaling or enable outputs to work around an unqualified reference path |
 | SD not mounted / FatFs 13 | Check known FAT32 media; 13 is no recognized filesystem. No automatic format/recovery is performed |
 | BLE responds to AT but no peer data | Verify supported SPS central, volatile profile/readback, data mode, RTS/CTS/DSR and actual module firmware |
 | GNSS messages but no fix | Antenna/bias/sky view and receiver quality; do not conflate RF navigation with UART transport |
+| GNSS probe fails before messages | Preserve failure stage/status, RX/TX/preflight/retry and HAL diagnostics; follow section E's power, SAFEBOOT, continuity and waveform split before retrying |
 | Repeated MCU reboot | Capture reset flags and supervisor fault before reset if possible; inspect power/stack/clock/task liveness with SWD. Do not disable IWDG to hide it |
 
 The diagnostic supervisor refreshes IWDG while console, sensor owner and successfully started output-owner tasks progress. Expected missing components do not cause the normal flight sensor-freshness reset loop. A worker command has a 40 s ceiling; liveness/low-stack/fatal faults remain fail-stop. USB and SD expose their own health/stack margins; this is not a proof of complete system schedulability. MCU hang/power loss can still defeat the dashboard or software deassertion. Physical isolation remains essential.
@@ -338,8 +377,8 @@ Only send the next line after the previous reply; the snippet is not a batch scr
 | Verb (after ID) | Meaning |
 |---|---|
 | `hello`, `status` | Read-only identification/ack; full status is streamed periodically |
-| `probe adxl/lsm/mmc/baro/bno/gnss/ble/radio` | Choose **one** literal module name, once per boot |
-| `led 0..7`, `beep`, `stop` | LED mask; 200 ms nominal beep; stop **indicators only** |
+| `probe adxl/lsm/mmc/baro/bno/gnss/ble/radio` | Choose one literal module name. Only a completed failed GNSS probe may be explicitly retried |
+| `led 0`, `beep`, `stop` | Explicit RGB-low request; 200 ms nominal beep; stop buzzer and force RGB low. Nonzero LED masks are rejected |
 | `gpio 1..7`, `gpio 0` | One logic-only 1 s HIGH; or all logic outputs LOW |
 | `sd mount/read/test/unmount` | Choose one operation; fixed safe fixture names |
 | `utc YYYY M D h m s` | Explicit Gregorian UTC, years 2000–2099 |
@@ -356,10 +395,10 @@ Records are ASCII JSON + LF: `hello`, periodic `status`, ticketed `reply`, or ex
 Important fields:
 
 - `init[12]`: ADXL, LSM, MMC, barometer, BNO identity, BNO reports, GNSS identity, GNSS RAM config, BLE, radio transport, LED, buzzer. `attempted` bits 0–7 follow the eight `probe` names above. Before a probe, NOT_READY is expected.
-- `count/errors/sample_status[4]`: direct sensors ADXL/LSM/MMC/barometer. A retained value is valid evidence only with a successful sample count, acceptable status and age. `bno.count/t/accuracy[4]` refer to accel/gyro/magnetic/quaternion separately.
+- `count/errors/sample_status[4]`: direct sensors ADXL/LSM/MMC/barometer. A retained value is valid evidence only with a successful sample count, acceptable status and age. `bno.count/t/accuracy[4]` refer to accel/gyro/magnetic/quaternion separately. `bno.health` exposes transfer counts/errors, retained HAL status/error/stage/length, pending continuation length, H_INTN level, initialization and shared-I2C recovery outcomes.
 - `adxl.mg`, `lsm.mg`: divide by 1000 for g. `lsm.mdps`: divide by 1000 for deg/s. `mmc.nt`, `bno.mag_nt`: divide by 1000 for µT. `bno.accel_mm_s2` / `gyro_mrad_s`: divide by 1000 for m/s² / rad/s. Quaternion `q_ppm` is **w,x,y,z** divided by 1,000,000. `temp_cc` is centi-°C; `baro.pa` is Pa.
-- `gnss.lat_e7/lon_e7`: signed degrees ×10⁷; `h_msl_mm/hacc_mm`: millimetres. `fix`, `flags`, `sv`, `frames`, `t`, checksum counters and `pps_count/pps_us` must be interpreted together. Coordinates are private test data.
-- `power.mv/raw/valid/count/t` and `vdda_mv/temp_c`: analog record described above. `gpio.inputs/outputs` are bit masks; outputs are commanded, not sensed. `gpio.pwm/armed` must remain zero.
+- `gnss.lat_e7/lon_e7`: signed degrees ×10⁷; `h_msl_mm/hacc_mm`: millimetres. Interpret `fix`, `flags`, `sv`, `frames`, `t`, checksums and `pps_count/pps_us` together. `failure_stage/status`, `pps_started`, RX/TX/drop/error/restart/preflight/retry counts and HAL status/error diagnose startup. Coordinates are private test data.
+- `power.mv/raw/valid/count/t` and `vdda_mv/temp_c`: analog record described above. `ref_stage/channel/raw/hal_status/hal_error` retain the first ADC3 VREFINT/temperature failure; `adc_errors` counts the separate external ADC1/DMA path. `gpio.inputs/outputs` are bit masks; general outputs are commanded, not sensed. `led.inhibited` must be 1, `led.commanded` must be 0, and `led.gates` should be 0; this only samples the legacy MCU control nets. `gpio.pwm/armed` must remain zero.
 - `sd`: physical detect, mount/result/counters, RTC validity/calendar. `ble` / `radio`: identity/mode/byte counts and most recent raw chunk in hex. Neither implies peer acknowledgement.
 - `usb`: session, byte/drop/timeout counters. `tasks`: heartbeats, busy/fault/parser/reply counters and free stack **words**, ordered console/owner/IO/SD/USB. `pending_id=0` means no retained command in progress.
 - `reply`: `id`, numeric `status`, human-readable `name`, escaped `detail`, `verified_bytes`. A GPIO reply is request completion, an SD compare reply verifies bytes, and a radio write reply is only a local transport outcome.
@@ -381,7 +420,7 @@ DMM TP1 / TP3 / TP4 / TP5 / TP6 / TP7; module/aux rails:
 Scope startup/ripple/reset traces; temperature observations:
 USB DFU → application CDC / Identify / reconnect evidence:
 ADC comparison / raw rank mapping / invalid-data behavior:
-LED physical channel mapping / buzzer waveform / SW2:
+RGB inhibit and all-three-low evidence / buzzer waveform / SW2:
 ADXL / LSM / MMC / MS5611: identities, counts, axes, reference checks:
 BNO: identity, all four streams, accuracy and quaternion checks:
 SD: detect / mount / 23-byte read / 1024-byte MCU compare / laptop compare:

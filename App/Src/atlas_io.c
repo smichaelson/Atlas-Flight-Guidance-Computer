@@ -148,6 +148,24 @@ static void io_fail(AtlasStatus status)
     if (working.status == ATLAS_OK) working.status = status;
     AtlasRtos_InhibitOutputs();
 }
+/** @brief Retain the first ADC3 reference/temperature failure without changing policy.
+ * @param stage Failed state-machine operation.
+ * @param temperature true for the temperature channel, false for VREFINT.
+ * @param hal_status HAL result associated with the operation.
+ * @param raw Most recent ADC data register value, or zero before a read. */
+static void io_reference_note_failure(AtlasIoReferenceFailureStage stage,
+                                      bool temperature,
+                                      HAL_StatusTypeDef hal_status,
+                                      uint32_t raw)
+{
+    if (working.reference_failure_stage != ATLAS_IO_REFERENCE_FAILURE_NONE) return;
+    working.reference_failure_stage = stage;
+    working.reference_temperature_channel = temperature;
+    working.reference_hal_status = (uint32_t)hal_status;
+    working.reference_hal_error = hw.adc_internal != NULL ?
+                                  (uint32_t)hw.adc_internal->ErrorCode : 0U;
+    working.reference_raw = raw;
+}
 /** @brief ADC DMA completion carries flags only. @param adc Completed handle. */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *adc)
 { if (hardware_ready && adc == hw.adc_external) { __DMB(); adc_complete = true; } }
@@ -263,15 +281,29 @@ static AtlasStatus io_pyro_start(uint8_t channel)
 static HAL_StatusTypeDef io_internal_start(bool temperature)
 {
     ADC_ChannelConfTypeDef channel = {0};
+    HAL_StatusTypeDef hal_status;
+
     channel.Channel = temperature ? ADC_CHANNEL_TEMPSENSOR : ADC_CHANNEL_VREFINT;
     channel.Rank = ADC_REGULAR_RANK_1;
     channel.SamplingTime = ADC_SAMPLETIME_810CYCLES_5;
     channel.SingleDiff = ADC_SINGLE_ENDED;
     channel.OffsetNumber = ADC_OFFSET_NONE;
-    if (HAL_ADC_ConfigChannel(hw.adc_internal, &channel) != HAL_OK) return HAL_ERROR;
+    hal_status = HAL_ADC_ConfigChannel(hw.adc_internal, &channel);
+    if (hal_status != HAL_OK)
+    {
+        io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_CONFIGURE,
+                                  temperature, hal_status, 0U);
+        return hal_status;
+    }
     internal_temperature = temperature;
     internal_started_ms = HAL_GetTick();
-    if (HAL_ADC_Start(hw.adc_internal) != HAL_OK) return HAL_ERROR;
+    hal_status = HAL_ADC_Start(hw.adc_internal);
+    if (hal_status != HAL_OK)
+    {
+        io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_START,
+                                  temperature, hal_status, 0U);
+        return hal_status;
+    }
     internal_pending = true;
     return HAL_OK;
 }
@@ -280,27 +312,81 @@ static void io_reference(uint32_t now)
 {
     if (internal_pending)
     {
-        if (__HAL_ADC_GET_FLAG(hw.adc_internal, ADC_FLAG_OVR) ||
-            (uint32_t)(now - internal_started_ms) > IO_ADC_TIMEOUT_MS)
-        { (void)HAL_ADC_Stop(hw.adc_internal); reference_valid = false; io_fail(ATLAS_ERROR_TIMEOUT); return; }
+        if (__HAL_ADC_GET_FLAG(hw.adc_internal, ADC_FLAG_OVR))
+        {
+            io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_OVERRUN,
+                                      internal_temperature, HAL_ERROR, 0U);
+            (void)HAL_ADC_Stop(hw.adc_internal);
+            reference_valid = false;
+            io_fail(ATLAS_ERROR_TIMEOUT);
+            return;
+        }
+        if ((uint32_t)(now - internal_started_ms) > IO_ADC_TIMEOUT_MS)
+        {
+            io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_TIMEOUT,
+                                      internal_temperature, HAL_TIMEOUT, 0U);
+            (void)HAL_ADC_Stop(hw.adc_internal);
+            reference_valid = false;
+            io_fail(ATLAS_ERROR_TIMEOUT);
+            return;
+        }
         if (!__HAL_ADC_GET_FLAG(hw.adc_internal, ADC_FLAG_EOC)) return;
-        if (HAL_ADC_PollForConversion(hw.adc_internal, 0U) != HAL_OK)
-        { reference_valid = false; io_fail(ATLAS_ERROR_IO); return; }
+        const HAL_StatusTypeDef poll_status = HAL_ADC_PollForConversion(hw.adc_internal, 0U);
+        if (poll_status != HAL_OK)
+        {
+            io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_POLL,
+                                      internal_temperature, poll_status, 0U);
+            reference_valid = false;
+            io_fail(ATLAS_ERROR_IO);
+            return;
+        }
         const uint32_t raw = HAL_ADC_GetValue(hw.adc_internal);
-        if (HAL_ADC_Stop(hw.adc_internal) != HAL_OK || raw < 16U || raw >= 65472U)
-        { reference_valid = false; io_fail(ATLAS_ERROR_IO); return; }
+        working.reference_raw = raw;
+        working.reference_temperature_channel = internal_temperature;
+        const HAL_StatusTypeDef stop_status = HAL_ADC_Stop(hw.adc_internal);
+        if (stop_status != HAL_OK)
+        {
+            io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_STOP,
+                                      internal_temperature, stop_status, raw);
+            reference_valid = false;
+            io_fail(ATLAS_ERROR_IO);
+            return;
+        }
+        if (raw < 16U || raw >= 65472U)
+        {
+            io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_RAW_RANGE,
+                                      internal_temperature, HAL_OK, raw);
+            reference_valid = false;
+            io_fail(ATLAS_ERROR_IO);
+            return;
+        }
         internal_pending = false;
         if (!internal_temperature)
         {
             reference_vdda = __HAL_ADC_CALC_VREFANALOG_VOLTAGE(raw, ADC_RESOLUTION_16B);
             reference_valid = reference_vdda >= 2800U && reference_vdda <= 3600U;
             working.analog.reference_at_ms = internal_started_ms;
-            if (!reference_valid || io_internal_start(true) != HAL_OK) io_fail(ATLAS_ERROR_IO);
+            if (!reference_valid)
+            {
+                io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_VDDA_RANGE,
+                                          false, HAL_OK, raw);
+                io_fail(ATLAS_ERROR_IO);
+            }
+            else if (io_internal_start(true) != HAL_OK)
+            {
+                io_fail(ATLAS_ERROR_IO);
+            }
         }
         else
         {
             const int32_t temperature = __HAL_ADC_CALC_TEMPERATURE(reference_vdda, raw, ADC_RESOLUTION_16B);
-            if (temperature < -50 || temperature > 150) { io_fail(ATLAS_ERROR_IO); return; }
+            if (temperature < -50 || temperature > 150)
+            {
+                io_reference_note_failure(ATLAS_IO_REFERENCE_FAILURE_TEMPERATURE_RANGE,
+                                          true, HAL_OK, raw);
+                io_fail(ATLAS_ERROR_IO);
+                return;
+            }
             working.analog.die_temperature_c = (int16_t)temperature;
         }
     }

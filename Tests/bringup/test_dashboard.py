@@ -47,6 +47,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(frames[-1]['ble']['model'], '\x01' * 96)
         self.assertIn('nt', frames[-1]['mmc'])
         self.assertIn('mag_nt', frames[-1]['bno'])
+        self.assertIn('health', frames[-1]['bno'])
+        self.assertIn('led', frames[-1])
         self.assertTrue(all(len(line) < 8192 for line in process.stdout.splitlines()))
 
     def test_fragments_and_bounds(self):
@@ -69,10 +71,19 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(decoder.feed(line), [])
         for path, value in ((('schema',), 2), (('schema',), True), (('profile',), 'normal'), (('gpio', 'pwm'), 1),
                             (('power', 'mv'), [1]), (('bno', 'count'), [True] * 4),
+                            (('bno', 'health'), {'interrupts': 0}),
+                            (('bno', 'health', 'failure_stage'), 10),
+                            (('bno', 'health', 'intn_low'), 2), (('led', 'gates'), 8),
+                            (('led', 'inhibited'), 0), (('led', 'commanded'), 1),
+                            (('gnss', 'failure_stage'), 11), (('gnss', 'hal_status'), 4),
+                            (('power', 'ref_stage'), 10), (('power', 'ref_channel'), 2),
+                            (('power', 'ref_hal_status'), 4),
                             (('tasks', 'fault'), -1), (('gnss', 'version'), 12),
                             (('mmc', 'nt'), [0x80000000, 0, 0])):
             frame = demo.status()
-            parent = frame if len(path) == 1 else frame[path[0]]
+            parent = frame
+            for component in path[:-1]:
+                parent = parent[component]
             parent[path[-1]] = value
             with self.assertRaises(ValueError):
                 validate(frame)
@@ -80,12 +91,20 @@ class ProtocolTests(unittest.TestCase):
         del frame['baro']['pa']
         with self.assertRaises(ValueError):
             validate(frame)
+        for replacement in (False, None):
+            hello = demo.hello()
+            if replacement is None:
+                del hello['led_inhibited']
+            else:
+                hello['led_inhibited'] = replacement
+            with self.assertRaises(ValueError):
+                validate(hello)
 
     def test_exact_commands(self):
         """@brief No host arbitrary text, pyro/PWM, scan, erase or impossible date."""
         for verb in ('probe adxl', 'gpio 0', 'gpio 7', 'utc 2024 2 29 12 0 0', 'i2c 80 0', 'sd test'):
             self.assertTrue(valid_command(verb), verb)
-        for verb in ('pyro fire', 'pwm 1', 'sd format', 'led 8', 'gpio -1', 'probe adxl\n1 beep',
+        for verb in ('pyro fire', 'pwm 1', 'sd format', 'led 1', 'led 8', 'gpio -1', 'probe adxl\n1 beep',
                      'utc 2026 2 29 12 0 0', 'i2c 0x50 0', 'i2c 120 0', 'i2c 8 256', 'ble arbitrary'):
             self.assertFalse(valid_command(verb), verb)
 
@@ -164,6 +183,11 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(len(rows), 14)
         self.assertIn('21.000', rows[2][3])
         self.assertIn('uT', rows[2][3])
+        self.assertIn('I2C reads/writes', rows[4][3])
+        self.assertIn('RGB firmware-inhibited', rows[13][3])
+        self.assertIn('UART RX/TX', rows[8][3])
+        self.assertIn('ADC3 none on temperature', rows[12][3])
+        self.assertIn('external ADC errors 0', rows[12][3])
         self.assertEqual(rows[8][1], 'RESPONDING / NO 3D FIX')
         frame['adxl']['t'] = 0
         self.assertEqual(observations(frame)[0][1], 'STALE')
