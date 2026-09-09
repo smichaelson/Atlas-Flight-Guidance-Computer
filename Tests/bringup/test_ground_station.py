@@ -31,6 +31,41 @@ class Serial:
     def close(self): self.closed = True
 
 
+class WindowsOpeningSerial(Serial):
+    """Model Windows purging an early CDC packet during open; never uses a port."""
+    def __init__(self, **options):
+        super().__init__()
+        self.options, self.port, self.opened = options, None, False
+        self._dtr, self.rts = True, True
+        self.fail_dtr = False
+        self.trace = []
+        self.startup = (b"\n" + json.dumps(demo.hello()).encode() + b"\n" +
+                        json.dumps(demo.status()).encode() + b"\n")
+
+    @property
+    def dtr(self): return self._dtr
+
+    @dtr.setter
+    def dtr(self, value):
+        if self.opened and value and self.fail_dtr:
+            raise OSError("setup failed")
+        was_high, self._dtr = self._dtr, value
+        self.trace.append(("dtr", value))
+        if self.opened and value and not was_high:
+            self.data += self.startup
+
+    def open(self):
+        self.opened = True
+        self.trace.append(("open", self.dtr, self.rts))
+        # pyserial configures DTR before PurgeComm. With DTR already high, the
+        # first endpoint packet can be discarded while the rest is still queued.
+        self.data = self.startup[64:] if self.dtr else b'previous-session tail}\n'
+
+    def reset_input_buffer(self):
+        self.trace.append(("purge", self.dtr))
+        self.data = b""
+
+
 class StationTests(unittest.TestCase):
     def setUp(self): self.s = gs.Station()
     def live(self):
@@ -52,6 +87,89 @@ class StationTests(unittest.TestCase):
             self.assertEqual(self.s.snapshot()["mode"],"demo")
             with self.assertRaises(ValueError): self.s.action("command",dict(verb="probe adxl"))
             with self.assertRaises(ValueError): self.s.action("firmware-update",dict(action_confirmed=True))
+
+    def test_windows_open_purge_cannot_truncate_the_handshake(self):
+        with patch.object(self.s, "ports", return_value=[dict(device="MODEL-ONLY")]), \
+                patch("serial.Serial", side_effect=WindowsOpeningSerial), \
+                patch.object(gs.time, "sleep") as settle:
+            self.s.action("connect", dict(port="MODEL-ONLY", confirmed=True))
+            device = self.s.serial
+            self.s.tick()
+        self.assertEqual(self.s.decoder.errors, 0, self.s.decoder.last_error)
+        self.assertEqual(self.s.session.hello, demo.hello())
+        self.assertTrue(self.s.snapshot()["fresh"])
+        self.assertFalse(self.s.session.blocked)
+        self.assertEqual(device.writes, [])
+        self.assertEqual(device.trace, [("dtr", False), ("open", False, False),
+                                        ("purge", False), ("dtr", True)])
+        settle.assert_called_once_with(0.1)
+
+    def test_connect_setup_failure_closes_handle_and_stays_disconnected(self):
+        for failed_step in ("open", "purge", "dtr"):
+            with self.subTest(step=failed_step):
+                device = WindowsOpeningSerial()
+                if failed_step == "open":
+                    device.open = Mock(side_effect=OSError("setup failed"))
+                elif failed_step == "purge":
+                    device.reset_input_buffer = Mock(side_effect=OSError("setup failed"))
+                else:
+                    device.fail_dtr = True
+                device.close = Mock(side_effect=OSError("removed during cleanup"))
+                with patch.object(self.s, "ports", return_value=[dict(device="MODEL-ONLY")]), \
+                        patch("serial.Serial", return_value=device), patch.object(gs.time, "sleep"):
+                    with self.assertRaisesRegex(OSError, "setup failed"):
+                        self.s.action("connect", dict(port="MODEL-ONLY", confirmed=True))
+                device.close.assert_called_once()
+                self.assertIsNone(self.s.serial)
+                self.assertEqual(self.s.mode, "disconnected")
+                self.assertFalse(self.s.confirmed)
+                self.assertEqual(self.s.handshake_deadline, 0)
+                self.assertEqual(device.writes, [])
+
+    def test_incomplete_handshake_times_out_once_without_sending(self):
+        for frames in ([], [demo.hello()], [demo.status()]):
+            with self.subTest(frames=[f["type"] for f in frames]):
+                station = gs.Station()
+                station.mode, station.serial = "live", Serial()
+                station.serial.data = b"".join(json.dumps(f).encode()+b"\n" for f in frames)
+                station.handshake_deadline = time.monotonic() - 1
+                station.tick(); station.tick()
+                self.assertIn("No complete Atlas handshake", station.session.blocked)
+                self.assertEqual(len(station.events), 2 if frames and frames[0]["type"] == "hello" else 1)
+                self.assertEqual(sum("within 8 seconds" in e["message"] for e in station.events), 1)
+                self.assertEqual(station.serial.writes, [])
+                with self.assertRaises(ValueError): station.send("hello")
+
+    def test_completed_handshake_cancels_only_the_startup_deadline(self):
+        self.live()
+        self.s.handshake_deadline = time.monotonic() + 8
+        self.s.tick()
+        self.assertEqual(self.s.handshake_deadline, 0)
+        self.s.session.received_at -= 10
+        self.s.tick()
+        self.assertFalse(self.s.session.fresh(time.monotonic()))
+        self.assertFalse(self.s.session.blocked)
+        with self.assertRaises(ValueError): self.s.send("probe gnss")
+
+    def test_corruption_does_not_recover_on_a_later_good_handshake(self):
+        self.s.mode, self.s.confirmed, self.s.serial = "live", True, Serial()
+        self.s.handshake_deadline = time.monotonic() - 1
+        self.s.serial.data = (b'bad first record\n' + json.dumps(demo.hello()).encode()+b'\n' +
+                              json.dumps(demo.status()).encode()+b'\n')
+        self.s.tick()
+        self.assertIn("Invalid telemetry", self.s.session.blocked)
+        self.assertIn("record starts b'bad first record'", self.s.events[-1]["message"])
+        self.assertEqual(self.s.handshake_deadline, 0)
+        with self.assertRaises(ValueError): self.s.send("probe gnss")
+        self.assertEqual(self.s.serial.writes, [])
+
+    def test_rejected_record_preview_is_bounded_and_escaped(self):
+        decoder = Decoder()
+        decoder.feed(b'\x1b\x00'+b'x'*8000+b'\n')
+        self.assertEqual(decoder.errors, 1)
+        self.assertIn("\\x1b\\x00", decoder.last_error)
+        self.assertNotIn("\x1b", decoder.last_error)
+        self.assertLess(len(decoder.last_error), 500)
 
     def test_moving_demo_preserves_wire_contract(self):
         decoder=Decoder()

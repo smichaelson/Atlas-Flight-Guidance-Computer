@@ -216,7 +216,9 @@ class Decoder:
                                                           parse_constant=_constant)))
                     except (ValueError, RecursionError) as exc:
                         self.errors += 1
-                        self.last_error = str(exc)
+                        # Escape and bound rejected input for the session log;
+                        # never silently skip corruption to enable commands.
+                        self.last_error = f"{exc}; record starts {bytes(self.buffer[:96])!r}"
                 self.buffer.clear()
                 self.discard = False
             elif not self.discard:

@@ -1,5 +1,23 @@
 # Ground Station review record
 
+## 2026-09-08 — Windows dashboard connection correction
+
+The owner installed the existing Bringup 1.1.1 HEX and reported an immediate JSON error on COM3. The browser dashboard opened with DTR already high. The installed Windows pyserial implementation configures DTR before its `PurgeComm` call, allowing the board's first handshake packet to be discarded while the remaining bytes arrive. The updater already used a delayed, DTR-low opening sequence; the browser dashboard did not.
+
+The correction opens with DTR low, waits 100 ms for the previous console session to settle, purges old input, and then raises DTR. Setup failures close the temporary handle without publishing a live connection. An eight-second startup deadline explains missing/incomplete handshakes, and rejected records now include up to 96 escaped input bytes in the error log. Corruption, stale data, missing inhibits and uncertain commands continue to block hardware actions; no automatic command or retry was added.
+
+Three sequential author review passes were performed:
+
+| Pass | Scope and evidence | Result |
+|---|---|---|
+| 1 | Traced actual installed Windows `Serial.open`, firmware DTR-triggered `hello`, dashboard opening order and existing updater; an inert Windows packet/purge model failed before the fix and passed after it | Confirmed the startup race and corrected the ordering without changing firmware |
+| 2 | 42 Ground Station/API/updater cases, including cleanup failure, missing/partial handshake timeout, no command writes during connection, corrupted input followed by valid telemetry, bounded escaped errors and existing update restrictions | Passed; malformed telemetry cannot silently recover into command readiness |
+| 3 | Physical USB-C connection after the owner reconnected Atlas with the documented isolated-load setup | COM3 identified Bringup 1.1.1, then delivered 24 validated status frames over 12 seconds with zero decoder errors; no test or programming command was sent |
+
+The physical capture reports supervisor fault 0, parser errors 0, response drops 0, USB drops/timeouts 0, and PWM/armed/output masks 0. It also reports **ADC reference failure stage 8 (computed VDDA range)**, `power.status=6`, and zero valid analog samples. This is an unresolved measurement fault, separate from the repaired USB handshake. No sensor probes, buzzer playback, software DFU cycle or flash write were performed during this connection diagnosis.
+
+The on-disk Bringup Debug HEX still verifies as SHA-256 `65ea940b8e5f770c49952c48439c1ecb30b91f1a4fc1299d9c1c75575dfdb033`. No firmware or image bytes were changed by this correction. Earlier statements below that hardware had not yet been flashed describe the dates of those earlier reviews.
+
 ## 2026-09-05 — buzzer melody, version 1.1.1
 
 Added **Test controls → Indicators & logic → ♪ Imperial March**, using exactly the owner's supplied pitch sequence. The arrangement has 33 notes, selected octaves from 1,319–3,136 Hz, simple note/rest timing, and a requested total duration of 11,360 ms. No external score or additional tune phrases were imported. The original 1–10 kHz TIM15 driver and normal application API are unchanged.

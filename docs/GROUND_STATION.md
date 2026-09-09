@@ -37,6 +37,16 @@ No Node packages, internet connection, accounts, hosted service or external map 
 
 Numbers with invalid/stale sample state are suppressed in the main instruments. Retained sensor-table values are labelled as last observations when the connection is stale. GNSS coordinates require a valid fix; a responding receiver alone is insufficient. Histories are bounded to 240 status frames (about 120 seconds at the firmware's 2 Hz publication rate). Status cadence is not the underlying sensor sampling rate.
 
+### If connection fails
+
+The September 8 dashboard correction fixes a Windows startup race that could show **Expecting value: line 1 column 1 (char 0)** immediately after opening the correct COM port. The dashboard now opens with DTR low, lets the old session settle for 100 ms, clears buffered input, then raises DTR to request a fresh handshake. This is a laptop-side correction; an already installed Bringup 1.1.1 image does not need another upload for it.
+
+After updating the Python files, stop the old dashboard server window and run **Start Atlas Dashboard.cmd** again, then refresh the browser. Refreshing only the browser keeps the old Python process running. Select the **STMicroelectronics Virtual COM Port** (COM3 in the September 8 bench check); the PC's generic **Communications Port (COM1)** is not Atlas. Port numbers can change.
+
+A missing or incomplete handshake now produces a clear error after eight seconds. Malformed telemetry still blocks commands; the session log includes an escaped, bounded preview of the rejected record. Check battery power, USB-C, the selected port, and the running Bringup profile before reconnecting. ROM DFU does not appear as an application COM port.
+
+The September 8 physical connection check identified Bringup 1.1.1 and received 24 real status records in 12 seconds without decoder errors. It also reported an ADC reference fault (`power.ref_stage=8`, computed VDDA range), so voltage readings were invalid. Successful USB communication does not qualify the individual sensors or power measurements.
+
 ## Play the buzzer melody
 
 With **Bringup 1.1.1 or later** installed and a confirmed live connection, open **Test controls → Indicators & logic → ♪ Imperial March**. The 33-note arrangement uses the owner's supplied pitch sequence, with simple timing and selected octaves inside the existing 1–10 kHz driver limits. It lasts about 11.36 seconds and plays once. The dashboard displays the current note or rest from MCU telemetry.
@@ -55,11 +65,11 @@ The Windows helper uses the installed Arm GNU compiler, CMake and GNU Make. It p
 
 The double-click launchers use Python directly, so Windows PowerShell's script-execution policy does not need to change. The `.ps1` helpers remain optional for environments where those scripts are permitted.
 
-An older image does not contain the new request handler. **One initial installation via BOOT0/NRST and factory DFU, or via SWD, is required.** Follow [the original initial-programming procedure](startup.md#4-program-the-stm32-over-usb-dfu), select the newly verified 1.1.0 image, preserve existing flash if needed, and retain verification evidence. Use a cold power cycle for this first installation. No software can make an already running older image respond to a command it does not implement.
+An older image does not contain the new request handler. **One initial installation via BOOT0/NRST and factory DFU, or via SWD, is required.** Follow [the original initial-programming procedure](startup.md#4-program-the-stm32-over-usb-dfu), select the newly verified 1.1.1 or later Bringup image, preserve existing flash if needed, and retain verification evidence. Use a cold power cycle for this first installation. No software can make an already running older image respond to a command it does not implement.
 
 ## Later updates without BOOT0/NRST
 
-With Bringup 1.1.0 running, BOOT0 left in its normal LOW state, and battery/USB-C connected:
+With Bringup 1.1.0 or later running, BOOT0 left in its normal LOW state, and battery/USB-C connected:
 
 1. Finish all tests and unmount the card. All GPIO pulses must have expired. Keep physical loads isolated.
 2. Build the new Bringup image. In **Firmware**, choose **Verify image**. An explicit manifest path can select a different build. The tool validates hashes, target, profile, vectors and the complete HEX address range, and stages a frozen copy.

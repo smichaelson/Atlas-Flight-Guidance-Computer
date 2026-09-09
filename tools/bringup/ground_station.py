@@ -71,6 +71,7 @@ class Station:
         self.last_demo = 0.0
         self.batch: list[str] = []
         self.confirmed = False
+        self.handshake_deadline = 0.0
         self.manifest = manifest
         self.frozen = None
         self.firmware = dict(state="unchecked", message="Check the build before updating.")
@@ -90,6 +91,7 @@ class Station:
         self.mode = "disconnected"
         self.batch.clear()
         self.confirmed = False
+        self.handshake_deadline = 0.0
         self.recording = False
         self.generation += 1
         self.session, self.decoder = Session(), Decoder()
@@ -144,9 +146,18 @@ class Station:
                     for frame in self.decoder.feed(data):
                         self.ingest(frame, now)
                     if self.decoder.errors != previous_errors:
-                        self.session.blocked = "Invalid telemetry received. Inspect the capture and reconnect."
+                        self.session.blocked = "Invalid telemetry received. See the session log, then disconnect and reconnect."
                         self.event(self.decoder.last_error, "error")
                         self.batch.clear()
+                    if self.handshake_deadline:
+                        if self.session.blocked or (self.session.hello and self.session.fresh(now)):
+                            self.handshake_deadline = 0.0
+                        elif now >= self.handshake_deadline:
+                            self.handshake_deadline = 0.0
+                            self.session.blocked = ("No complete Atlas handshake within 8 seconds. "
+                                                    "Check the selected COM port, battery power and running Bringup firmware; "
+                                                    "then disconnect and reconnect.")
+                            self.event(self.session.blocked, "error")
                     self.session.check_timeout(now)
                     if self.batch and not self.session.pending and not self.session.blocked:
                         if self.session.fresh(now) and not self.session.status["pending_id"]:
@@ -210,14 +221,24 @@ class Station:
                     raise ValueError("Disconnect or exit demo before connecting a device.")
                 import serial
                 device = serial.Serial(port=None, baudrate=115200, timeout=0, write_timeout=1)
-                device.dtr, device.rts = True, False
+                # Windows pyserial configures DTR before its open-time purge.
+                # Keep the MCU silent until that purge and old queued USB data
+                # have cleared, then create a fresh console connection boundary.
+                device.dtr, device.rts = False, False
                 device.port = port
                 try:
                     device.open()
+                    time.sleep(0.1)
+                    device.reset_input_buffer()
+                    device.dtr = True
                 except Exception:
-                    device.close()
+                    try:
+                        device.close()
+                    except Exception:
+                        pass  # Preserve the setup error if USB was also removed.
                     raise
                 self.serial, self.port, self.mode, self.confirmed = device, port, "live", True
+                self.handshake_deadline = time.monotonic() + 8.0
                 self.generation += 1
                 self.event("Connected to " + port + ". Waiting for inhibited firmware handshake.")
             elif action == "disconnect":
