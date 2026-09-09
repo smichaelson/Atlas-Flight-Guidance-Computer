@@ -43,6 +43,27 @@ static AtlasUsbHealth test_usb;
 static AtlasStorageResult test_storage_result;
 static bool storage_result_ready;
 static unsigned submitted_storage, submitted_gpio;
+static unsigned dfu_resets;
+static unsigned dfu_stops;
+static unsigned tone_requests;
+static uint32_t tone_duration;
+static AtlasStatus tone_result = ATLAS_OK;
+AtlasStatus AtlasBuzzer_Beep(AtlasBuzzer *buzzer, uint32_t hz, uint32_t ms)
+{
+    assert(hz >= ATLAS_BUZZER_MIN_FREQUENCY_HZ && hz <= ATLAS_BUZZER_MAX_FREQUENCY_HZ);
+    assert(ms > 0U && ms <= 650U);
+    ++tone_requests;
+    tone_duration = ms;
+    buzzer->running = true; /* Model a partially started timer even on failure. */
+    buzzer->frequency_hz = hz;
+    return tone_result;
+}
+void AtlasBuzzer_Stop(AtlasBuzzer *buzzer)
+{
+    buzzer->running = buzzer->timed = false;
+}
+void AtlasIo_EmergencyStop(void) { ++dfu_stops; }
+void AtlasBoot_RequestDfu(void) { ++dfu_resets; }
 bool AtlasIo_GetSnapshot(AtlasIoSnapshot *snapshot)
 {
     *snapshot = test_io;
@@ -89,6 +110,79 @@ bool AtlasStorage_Receive(AtlasStorageResult *result)
     storage_result_ready = false;
     *result = test_storage_result;
     return true;
+}
+
+/** @brief Exercise the actual nonblocking melody scheduler with inert TIM15 calls. */
+static void test_march(void)
+{
+    static AtlasBoard board;
+    bench_board = &board;
+    test_usb.configured = test_usb.dtr = true;
+    watchdog_fault = 0U;
+    uint32_t total = 0U;
+    assert(BENCH_MARCH_NOTES == 33U);
+    for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
+    {
+        assert(bench_march[i].hz >= 1000U && bench_march[i].hz <= 10000U);
+        assert(bench_march[i].tone_ms > 0U && bench_march[i].tone_ms <= 650U);
+        assert(bench_march[i].gap_ms <= 150U);
+        total += bench_march[i].tone_ms + bench_march[i].gap_ms;
+    }
+    assert(total == 11360U);
+    /* Full timeline crosses HAL tick wrap, including every audible/rest boundary. */
+    const uint32_t began = UINT32_MAX - 100U;
+    test_tick = began;
+    assert(bench_melody_start() == ATLAS_OK && melody_active);
+    assert(bench_melody_start() == ATLAS_ERROR_BUSY && tone_requests == 1U);
+    assert(!bench_dfu_ready());
+    uint32_t offset = 0U;
+    for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
+    {
+        test_tick = began + offset;
+        bench_melody_service();
+        assert(melody_active && board.buzzer.running);
+        assert(board.buzzer.frequency_hz == bench_march[i].hz);
+        assert(tone_duration == bench_march[i].tone_ms && tone_requests == i + 1U);
+        test_tick += bench_march[i].tone_ms;
+        bench_melody_service();
+        assert(!board.buzzer.running);
+        offset += bench_march[i].tone_ms + bench_march[i].gap_ms;
+    }
+    assert(!melody_active && tone_requests == 33U);
+    test_tick += 50000U;
+    bench_melody_service();
+    assert(tone_requests == 33U); /* No looping/replay after completion. */
+
+    assert(bench_melody_start() == ATLAS_OK);
+    const unsigned before = tone_requests;
+    test_tick += 900U; /* Skip the second note; shorten the third to its remaining time. */
+    bench_melody_service();
+    assert(tone_requests == before + 1U && melody_slot == 4U && tone_duration == 300U);
+    test_tick += total;
+    bench_melody_service();
+    assert(!melody_active && !board.buzzer.running && tone_requests == before + 1U);
+
+    assert(bench_melody_start() == ATLAS_OK);
+    bench_melody_stop();
+    bench_melody_service();
+    assert(!melody_active && !board.buzzer.running);
+    assert(bench_melody_start() == ATLAS_OK);
+    test_usb.dtr = false;
+    bench_melody_service();
+    assert(!melody_active && !board.buzzer.running);
+    test_usb.dtr = true;
+    assert(bench_melody_start() == ATLAS_OK);
+    ++link_epoch;
+    bench_melody_service();
+    assert(!melody_active && !board.buzzer.running);
+    assert(bench_melody_start() == ATLAS_OK);
+    watchdog_fault = 1U;
+    bench_melody_service();
+    assert(!melody_active && !board.buzzer.running);
+    watchdog_fault = 0U;
+    tone_result = ATLAS_ERROR_IO;
+    assert(bench_melody_start() == ATLAS_ERROR_IO);
+    assert(!melody_active && !board.buzzer.running);
 }
 
 /** @brief Check dispatch, queue reservation and both ordinary/worst-case JSON.
@@ -182,5 +276,58 @@ int main(void)
     bench_status();
     assert(strstr(tx, "serialization_overflow") == NULL && tx_length < BENCH_TX_CAPACITY);
     fputs(tx, stdout);
+    pending = BENCH_PENDING_NONE;
+    reply_count = 0U;
+    last_id = 100U;
+    test_usb.configured = test_usb.dtr = true;
+    test_sd.mounted = false;
+    test_io.pwm_enabled_mask = test_io.gpio_commanded_high = 0U;
+    test_io.pyro.software_armed = false;
+    worker_busy = false;
+    watchdog_fault = 0U;
+    assert(AtlasBench_Parse("101 bootloader 1 2 4", &command));
+    bench_dispatch(&command);
+    assert(!dfu_pending); /* Wrong target UID. */
+    test_sd.mounted = true;
+    assert(AtlasBench_Parse("102 bootloader 1 2 3", &command));
+    bench_dispatch(&command);
+    assert(!dfu_pending); /* Never reset a mounted filesystem. */
+    test_sd.mounted = false;
+    test_io.gpio_commanded_high = 1U;
+    assert(AtlasBench_Parse("103 bootloader 1 2 3", &command));
+    bench_dispatch(&command);
+    assert(!dfu_pending);
+    test_io.gpio_commanded_high = 0U;
+    reply_count = 0U;
+    assert(AtlasBench_Parse("104 bootloader 1 2 3", &command));
+    bench_dispatch(&command);
+    assert(dfu_pending && dfu_resets == 0U); /* Acceptance is not reset. */
+    assert(AtlasBench_Parse("105 gpio 1", &command));
+    const unsigned previous_gpio = submitted_gpio;
+    bench_dispatch(&command);
+    assert(submitted_gpio == previous_gpio);
+    reply_count = 0U;
+    tx_length = tx_offset = tx_queued = 100U;
+    tx_completed_base = 200U;
+    test_usb.tx_completed_bytes = 299U;
+    dfu_drop_base = test_usb.tx_dropped_bytes;
+    bench_dfu_service(&test_usb, true);
+    assert(dfu_pending && dfu_resets == 0U); /* Last USB byte still pending. */
+    test_usb.tx_completed_bytes = 300U;
+    bench_dfu_service(&test_usb, true);
+    assert(!dfu_pending && dfu_resets == 1U && dfu_stops == 1U);
+    dfu_pending = true;
+    bench_dfu_service(&test_usb, false);
+    assert(!dfu_pending && dfu_resets == 1U); /* Disconnect cancels. */
+    dfu_pending = true;
+    ++test_usb.tx_dropped_bytes;
+    bench_dfu_service(&test_usb, true);
+    assert(!dfu_pending && dfu_resets == 1U); /* Lost ACK cancels. */
+    dfu_pending = true;
+    dfu_drop_base = test_usb.tx_dropped_bytes;
+    dfu_started = test_tick - 3001U;
+    bench_dfu_service(&test_usb, true);
+    assert(!dfu_pending && dfu_resets == 1U); /* Finite deadline. */
+    test_march();
     return 0;
 }

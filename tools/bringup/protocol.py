@@ -135,6 +135,15 @@ def validate(frame: object) -> dict:
                     bno_health.get("recovery_attempts", 0)):
                 raise ValueError("Invalid bno.health object")
         led = frame.get("led")
+        if "buzzer" in frame:
+            buzzer = frame["buzzer"]
+            if (not isinstance(buzzer, dict) or
+                    not _integer(buzzer.get("playing"), 0, 1) or
+                    not _integer(buzzer.get("notes"), 1, 128) or
+                    not _integer(buzzer.get("note"), 0, buzzer.get("notes", 0)) or
+                    not _integer(buzzer.get("hz"), 0, 10000) or
+                    not _integer(buzzer.get("status"), 0, 13)):
+                raise ValueError("Invalid buzzer playback state")
         if (not isinstance(led, dict) or
                 not _integer(led.get("commanded"), 0, 0) or
                 not _integer(led.get("gates"), 0, 7) or
@@ -221,12 +230,14 @@ class Decoder:
 
 def valid_command(verb: str) -> bool:
     """@brief Match the firmware allowlist, never arbitrary terminal text. @return Validity."""
-    if verb in {"hello", "status", "beep", "stop", "uart", "spi", "sd mount", "sd read",
+    if verb in {"hello", "status", "beep", "march", "stop", "uart", "spi", "sd mount", "sd read",
                 "sd test", "sd unmount", "ble profile", "ble data", "ble command", "ble ping",
                 "radio id", "radio ping"}:
         return True
     if verb in {f"probe {module}" for module in MODULES}:
         return True
+    if re.fullmatch(r"bootloader [0-9]{1,10} [0-9]{1,10} [0-9]{1,10}", verb):
+        return all(int(value) <= 0xFFFFFFFF for value in verb.split()[1:])
     if verb == "led 0" or re.fullmatch(r"gpio [0-7]", verb):
         return True
     if re.fullmatch(r"i2c [0-9]{1,3} [0-9]{1,3}", verb):
@@ -314,6 +325,18 @@ class Session:
                 raise ValueError("MCU still has an outstanding operation; wait for it to finish")
         if self.next_id > 0xFFFFFFFF:
             raise ValueError("Command IDs exhausted; reconnect manually")
+        if verb == "march":
+            if self.hello.get("buzzer_melody") is not True or "buzzer" not in self.status:
+                raise ValueError("Install Bringup 1.1.1 or later for buzzer melody playback")
+            if self.status["buzzer"]["playing"]:
+                raise ValueError("The march is already playing; Stop indicators cancels it")
+        if verb.startswith("bootloader "):
+            if (self.hello.get("software_dfu") is not True or
+                    [int(v) for v in verb.split()[1:]] != self.hello["uid"]):
+                raise ValueError("Firmware does not advertise software DFU for this UID")
+            if (self.status["sd"]["mounted"] or self.status["gpio"]["outputs"] or
+                    self.status["tasks"]["busy"] or self.status.get("buzzer", {}).get("playing")):
+                raise ValueError("Unmount SD and stop playback; wait for all tests and GPIO pulses to finish")
         self.pending = Pending(self.next_id, verb, now)
         self.next_id += 1
         return f"{self.pending.identifier} {verb}\n".encode("ascii")

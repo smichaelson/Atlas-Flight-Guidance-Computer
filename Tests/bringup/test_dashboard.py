@@ -253,7 +253,7 @@ class ProtocolTests(unittest.TestCase):
             body = bytes([len(payload), address >> 8, address & 255, kind]) + payload
             return ':' + body.hex() + f'{(-sum(body)) & 255:02x}\n'
 
-        def install(stack=0x20020000, reset=0x08000009, hex_mismatch=False):
+        def install(stack=0x2001FFE0, reset=0x08000009, hex_mismatch=False):
             """@brief Create synthetic artifacts only in the unique inert test directory."""
             binary = struct.pack('<II', stack, reset) + bytes(range(24))
             encoded = bytearray(binary)
@@ -289,8 +289,8 @@ class ProtocolTests(unittest.TestCase):
             store_manifest(manifest)
             with self.assertRaises(ValueError, msg=key):
                 image_check.verify(manifest_path)
-        for stack, reset in ((0x24000000, 0x08000009), (0x20020000, 0x08000008),
-                             (0x20020000, 0x08000021), (0x20020000, 0x08010001)):
+        for stack, reset in ((0x24000000, 0x08000009), (0x2001FFE0, 0x08000008),
+                             (0x2001FFE0, 0x08000021), (0x2001FFE0, 0x08010001)):
             install(stack, reset)
             with self.assertRaises(ValueError):
                 image_check.verify(manifest_path)

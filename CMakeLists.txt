@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/atlas_ble.c
     App/Src/atlas_bno085.c
     App/Src/atlas_board.c
+    App/Src/atlas_boot.c
     App/Src/atlas_bringup.c
     App/Src/atlas_bringup_protocol.c
     App/Src/atlas_buzzer.c

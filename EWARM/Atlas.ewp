@@ -1108,6 +1108,8 @@
         <file><name>$PROJ_DIR$/../App/Src/atlas_ble.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_bno085.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_board.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_boot.c</name></file>
+        <file><name>$PROJ_DIR$/atlas_boot_branch.s</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_buzzer.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_gnss.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_led.c</name></file>

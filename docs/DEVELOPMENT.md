@@ -6,6 +6,8 @@ For physical PCB bring-up, use **[startup](startup.md)**. `Bringup` and `Bringup
 
 ## Build
 
+The [Ground Station guide](GROUND_STATION.md) covers the Windows build launcher and verified update workflow. Preserve `AtlasBoot_EarlyCheck()` before MPU/cache/HAL setup, the `.atlas_boot` no-initialize section, and the reserved top-of-RAM stack space when regenerating or changing startup/linker code.
+
 The reviewed environment used Arm GNU 14.3.1 (Arm build 14.174), CMake 3.26.4, Windows MinGW Makefiles/GNU Make, host GCC 13.1.0, and PowerShell 7. CMake's project minimum is 3.22. The repository presets select Ninja; the latest review built with the Makefiles fallback, not Ninja. IAR XML/source membership was checked, but no IAR compiler was available.
 
 Put `arm-none-eabi-gcc`, `arm-none-eabi-g++`, `arm-none-eabi-objcopy` and `arm-none-eabi-size` on `PATH`. Run from the repository root:
@@ -42,6 +44,8 @@ pwsh -NoProfile -File Tests/repository/check_repository.ps1
 pwsh -NoProfile -File Tests/review/run_review_probes.ps1
 pwsh -NoProfile -File Tests/services/run_service_tests.ps1
 pwsh -NoProfile -File Tests/bringup/run_bringup_tests.ps1 -Python .\.venv\Scripts\python.exe
+node Tests/bringup/test_instruments.js
+node Tests/bringup/test_buzzer_ui.js
 ```
 
 - **Host suite:** selected sensor register/math, UBX, AT/profile, LED/buzzer, UART overflow and watchdog-policy contracts. It does not run the complete FreeRTOS kernel, board startup, BNO085/SHTP, SD or USB on hardware.
@@ -51,7 +55,7 @@ pwsh -NoProfile -File Tests/bringup/run_bringup_tests.ps1 -Python .\.venv\Script
 
 Host executables are generated in the OS temporary directory. Use host GCC for these tests, not `arm-none-eabi-gcc`. Do not run the existing host-suite script concurrently with itself: its output filename is shared.
 
-The **bring-up suite** adds strict command/framing/fuzz tests, production console routing/backpressure and actual C-to-Python JSON compatibility, diagnostic GPIO/output denial, exclusive SD file comparison/fault cases, desktop session/fixture/image models, actual UI lifecycle tests against an inert serial substitute, and a hidden Tk smoke test. Python/Tk is required; pyserial and hardware are not required for these tests. Temporary fixture files are retained in a unique directory. These tests are not proof of real COM/Windows-driver interoperability.
+The **bring-up suite** adds strict command/framing/fuzz tests, production console routing/backpressure and actual C-to-Python JSON compatibility, diagnostic GPIO/output denial, exclusive SD file comparison/fault cases, desktop session/fixture/image models, actual UI lifecycle tests against an inert serial substitute, and a hidden Tk smoke test. It also tests reset markers, local web API boundaries, recording and mocked programmer sequencing. Python/Tk and the pinned pyserial requirement are needed; no hardware is accessed. Run `node Tests/bringup/test_instruments.js` for instrument math and validity gates. Temporary fixture files are retained in a unique directory. These tests are not proof of real COM/Windows-driver interoperability.
 
 ## Application integration
 

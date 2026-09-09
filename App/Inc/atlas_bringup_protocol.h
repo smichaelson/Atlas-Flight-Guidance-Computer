@@ -3,7 +3,8 @@
  * @brief Heap-free bench command framing and checked JSON-lines serialization.
  * Major functions: AtlasBench_Feed/Parse reject malformed commands; the Json*
  * functions construct bounded, ASCII JSON without libc formatted I/O.
- * No arbitrary memory/register write, reset, bootloader, PWM or pyro command exists.
+ * Only a UID-bound factory-DFU request may reset; no memory/register write,
+ * PWM or pyro command exists.
  */
 #ifndef ATLAS_BRINGUP_PROTOCOL_H
 #define ATLAS_BRINGUP_PROTOCOL_H
@@ -35,7 +36,9 @@ typedef enum
     ATLAS_BENCH_RADIO_PING,
     ATLAS_BENCH_UART_TEST,
     ATLAS_BENCH_SPI_TEST,
-    ATLAS_BENCH_I2C_READ
+    ATLAS_BENCH_I2C_READ,
+    ATLAS_BENCH_DFU,
+    ATLAS_BENCH_MARCH
 } AtlasBenchOperation;
 /** @brief Copied command: nonzero host ID, allowlisted operation, bounded integers. */
 typedef struct

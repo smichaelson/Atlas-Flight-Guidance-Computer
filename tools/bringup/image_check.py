@@ -61,7 +61,8 @@ def verify(manifest_path: Path) -> dict:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (not isinstance(manifest, dict) or type(manifest.get("schema")) is not int or
             manifest.get("schema") != 1 or manifest.get("profile") != "bringup" or
-            manifest.get("target") != "STM32H743ZIT6" or manifest.get("flash_base") != "0x08000000"):
+            manifest.get("target") != "STM32H743ZIT6" or manifest.get("flash_base") != "0x08000000" or
+            manifest.get("build_type") not in ("Debug", "Release", "RelWithDebInfo", "MinSizeRel")):
         raise ValueError("Not the reviewed Atlas bring-up target/profile/address")
     files = {}
     for kind, expected in (("binary", "Atlas-Bringup.bin"), ("hex", "Atlas-Bringup.hex")):
@@ -77,7 +78,7 @@ def verify(manifest_path: Path) -> dict:
     if len(binary) != manifest.get("binary_bytes") or not 8 <= len(binary) <= FLASH_END - FLASH_BASE:
         raise ValueError("Invalid binary size")
     stack, reset = struct.unpack_from("<II", binary)
-    if stack != 0x20020000 or not reset & 1 or not FLASH_BASE <= reset - 1 < FLASH_BASE + len(binary):
+    if stack != 0x2001FFE0 or not reset & 1 or not FLASH_BASE <= reset - 1 < FLASH_BASE + len(binary):
         raise ValueError("Wrong STM32 initial stack/reset vectors")
     data = hex_data(files["hex"].decode("ascii"))
     if min(data) != FLASH_BASE or max(data) != FLASH_BASE + len(binary) - 1:

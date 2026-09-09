@@ -77,7 +77,8 @@ Always measure **PE5 minus PE6** as well as each pin to ground. Stop must leave 
 ## Known limits
 
 - The buzzer is an indicator, not a safety annunciator with independent supervision.
-- No melody/priority queue, volume control, fault feedback, or acoustic self-test exists.
+- The driver has no general melody/priority queue, volume control, fault feedback, or acoustic self-test.
+- The Bringup 1.1.1 owner adds one fixed, nonblocking 33-note melody through the [Ground Station](../../GROUND_STATION.md#play-the-buzzer-melody). It is a separate diagnostic sequencer, not a general driver priority queue; the normal application API is unchanged.
 - A blocked `AtlasIO` task can delay a scheduled stop until the watchdog resets the MCU; continuous tones require explicit control discipline.
 - Confirm lifecycle and exact part specifications when procuring a replacement; any substitution needs electrical/acoustic requalification.
 

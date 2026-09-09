@@ -127,6 +127,8 @@ The PWM rail is live even while PWM signals are disabled. Its nominal 8.4 V is a
 
 ## 4. Program the STM32 over USB DFU
 
+This section remains the initial-installation and recovery procedure. Bringup 1.1.0 additionally supports later updates without BOOT0/NRST through the [Ground Station firmware workflow](GROUND_STATION.md#later-updates-without-boot0nrst). Its browser dashboard is an alternative to the original Tk dashboard described below. The owner's current setup uses battery power and USB-C data, with motors/servos/pyro loads disconnected and J5 open; the input limit and board inspection requirements still apply.
+
 ### Understand the two USB devices
 
 | MCU state | Laptop sees | Tool |
@@ -143,7 +145,7 @@ Direct ROM USB DFU programs flash; it does not supply SWD breakpoints, live memo
 3. Turn on the already-checked current-limited main supply. Recheck rails. Connect the USB **data** cable to J2 and the laptop; then release NRST. BOOT0 must be HIGH when reset is released. If needed, give another deliberate NRST LOW/release pulse while keeping BOOT0 HIGH.
 4. Open CubeProgrammer. Select **USB**, refresh the device list, and choose the matching DFU device/serial number. Connect. Confirm the STM32H743 family and expected 2 MiB flash device, and record the silicon/bootloader revision. If multiple STM32s are attached, disconnect the unrelated ones or explicitly match the intended serial number.
 5. In the file programming view, select **the exact `Atlas-Bringup.hex` whose manifest you checked**. Enable programming verification. Leave automatic application run/“Run after programming” OFF. Do not select mass erase, readout-protection changes, option-byte programming, or an unrelated memory range. Allow the programmer's necessary sector erase for this image; the HEX is bounded to bank 1.
-6. Start programming and require both successful download and **successful verification**. Save the log and the manifest. On failure, leave loads disconnected, record the error, and diagnose; do not assume partial flash is usable. No automatic flash command is run by the repository's build tasks or dashboard.
+6. Start programming and require both successful download and **successful verification**. Save the log and the manifest. On failure, leave loads disconnected, record the error, and diagnose; do not assume partial flash is usable. Build tasks never flash. The new browser dashboard only flashes through its explicit, checked firmware-update workflow.
 7. Disconnect in CubeProgrammer. Unplug USB, switch main power OFF, and confirm rails have discharged before moving jumpers. Remove the BOOT0 HIGH jumper; R12 returns BOOT0 LOW. Release any temporary NRST hold for normal operation.
 8. Turn main power ON with BOOT0 LOW and J5 still OPEN; check rails/current again. Attach USB after stable power. This time expect the **CDC COM device**, not DFU. Continue to the dashboard.
 
@@ -379,6 +381,7 @@ Only send the next line after the previous reply; the snippet is not a batch scr
 | `hello`, `status` | Read-only identification/ack; full status is streamed periodically |
 | `probe adxl/lsm/mmc/baro/bno/gnss/ble/radio` | Choose one literal module name. Only a completed failed GNSS probe may be explicitly retried |
 | `led 0`, `beep`, `stop` | Explicit RGB-low request; 200 ms nominal beep; stop buzzer and force RGB low. Nonzero LED masks are rejected |
+| `march` | Bringup 1.1.1+: play the owner's 33-note sequence once without blocking sensor polling; `stop` cancels. See [melody controls](GROUND_STATION.md#play-the-buzzer-melody) |
 | `gpio 1..7`, `gpio 0` | One logic-only 1 s HIGH; or all logic outputs LOW |
 | `sd mount/read/test/unmount` | Choose one operation; fixed safe fixture names |
 | `utc YYYY M D h m s` | Explicit Gregorian UTC, years 2000–2099 |

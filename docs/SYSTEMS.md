@@ -8,6 +8,8 @@ Major interfaces: `AtlasRtos_GetSnapshot()` for sensors, `AtlasIo_GetSnapshot()`
 
 ## Select the right profile
 
+Bringup 1.1.0 adds a local browser Ground Station and UID-bound software entry into factory USB DFU. See the [operator guide](GROUND_STATION.md) and [three-pass review](GROUND_STATION_REVIEW.md). The normal application does not expose a USB maintenance parser; its update policy remains separate. Software DFU and return to the application still require physical acceptance on this board.
+
 | Build preset | Startup and use |
 |---|---|
 | **Bringup / BringupRelease** | Isolated diagnostic RTOS application; USB JSON dashboard, explicit staged probes and SD tests. Failed GNSS alone permits deliberate manual recovery; other probes remain once per boot. RGB, PWM and pyro are inhibited. No control hook; missing modules are reported without the normal required-sensor reset loop |

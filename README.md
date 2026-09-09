@@ -6,6 +6,8 @@ Atlas is a collaborative STM32H743 flight-computer development project for the R
 
 ## Start here
 
+**New dashboard and USB updates:** see the [Ground Station guide](docs/GROUND_STATION.md). Use **Start Atlas Dashboard.cmd**, **Atlas Dashboard Demo.cmd**, and **Build Atlas Firmware.cmd** in this folder. Version 1.1.0 adds guarded software DFU entry after one initial installation. The [three-pass review](docs/GROUND_STATION_REVIEW.md) records the tested scope and physical checks still pending.
+
 **PCB on the bench? Start with [startup](docs/startup.md)** — the complete power/BOOT0/reset/USB-programming procedure, local dashboard and staged tests. Build the **Bringup** preset, not the normal Debug/Release application. Check the documented USB schematic/manufacturing polarity conflict against the actual board before USB use.
 
 For code collaboration, read [Quick start](docs/QUICK_START.md) and [Systems](docs/SYSTEMS.md): what runs, how to build/check it, and what remains unverified.

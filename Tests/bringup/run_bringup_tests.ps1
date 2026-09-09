@@ -49,4 +49,12 @@ $env:ATLAS_CONSOLE_TEST_EXE = Join-Path $bringupOutput 'console.exe'
 & $Python (Join-Path $bringupRoot 'Tests/bringup/test_dashboard.py')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $Python (Join-Path $bringupRoot 'tools/bringup/dashboard.py') --smoke-test
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& gcc -std=c11 -Wall -Wextra -Werror -DATLAS_BOOT_HOST_TEST -I (Join-Path $bringupRoot 'App/Inc') `
+    (Join-Path $bringupRoot 'Tests/bringup/test_boot.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_boot.c') -o (Join-Path $bringupOutput 'boot.exe')
+if ($LASTEXITCODE -ne 0) { exit 2 }
+& (Join-Path $bringupOutput 'boot.exe')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $Python (Join-Path $bringupRoot 'Tests/bringup/test_ground_station.py')
 exit $LASTEXITCODE

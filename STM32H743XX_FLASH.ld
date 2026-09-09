@@ -64,11 +64,13 @@ FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 2048K
 }
 
 /* Highest address of the user mode stack */
-_estack = ORIGIN(DTCMRAM) + LENGTH(DTCMRAM);    /* end of RAM */
+/* AN2606 H743 ROM Go requires MSP below RAM-end minus 16 bytes. Reserve 32;
+   keep the existing fixed stack bottom and MPU guard unchanged. */
+_estack = ORIGIN(DTCMRAM) + LENGTH(DTCMRAM) - 0x20;
 _sstack = _estack - _Min_Stack_Size;
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0x0;      /* required amount of heap  */
-_Min_Stack_Size = 0x4000; /* required amount of stack */
+_Min_Stack_Size = 0x3FE0; /* 16 KiB less the 32-byte ROM entry reservation */
 __atlas_msp_guard_start__ = _sstack - 0x100;
 
 /* MPU_Config protects exactly 0x2001BF00..0x2001BFFF. Keep both
@@ -171,6 +173,13 @@ SECTIONS
 
   /* used by the startup to initialize data */
   _sidata = LOADADDR(.data);
+
+  /* Retained only across a deliberate system reset; outside startup zeroing.
+     Before .data so the existing DTCM/stack guard also covers this allocation. */
+  .atlas_boot (NOLOAD) : ALIGN(8)
+  {
+    KEEP(*(.atlas_boot))
+  } >DTCMRAM
 
   /* Initialized data sections goes into RAM, load LMA copy after code */
   .data :

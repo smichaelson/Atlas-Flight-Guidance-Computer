@@ -71,6 +71,7 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
     static const struct BenchWord simple[] = {
         {"hello", ATLAS_BENCH_HELLO},    {"status", ATLAS_BENCH_STATUS},
         {"beep", ATLAS_BENCH_BEEP},      {"stop", ATLAS_BENCH_STOP},
+        {"march", ATLAS_BENCH_MARCH},
         {"uart", ATLAS_BENCH_UART_TEST}, {"spi", ATLAS_BENCH_SPI_TEST}};
     if (count == 2U)
     {
@@ -82,6 +83,15 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
                 return true;
             }
         return false;
+    }
+    if (strcmp(token[1], "bootloader") == 0 && count == 5U)
+    {
+        for (unsigned i = 0U; i < 3U; ++i)
+            if (!bench_number(token[i + 2U], &parsed.argument[i]))
+                return false;
+        parsed.operation = ATLAS_BENCH_DFU;
+        *command = parsed;
+        return true;
     }
     if (strcmp(token[1], "probe") == 0 && count == 3U)
     {

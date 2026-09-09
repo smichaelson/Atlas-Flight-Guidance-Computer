@@ -231,7 +231,7 @@ $stackContracts = @(
     @{ Name = 'GNU fixed MSP assertion'; Text = $gnuLayout; Pattern = 'ASSERT\(_sstack\s*==\s*0x2001C000' },
     @{ Name = 'GNU data/guard exclusion'; Text = $gnuLayout; Pattern = 'ASSERT\(_ebss\s*\+\s*_Min_Heap_Size\s*<=\s*__atlas_msp_guard_start__' },
     @{ Name = 'GNU 256-byte guard'; Text = $gnuLayout; Pattern = '__atlas_msp_guard_start__\s*=\s*_sstack\s*-\s*0x100\s*;' },
-    @{ Name = 'IAR 16-KiB MSP size'; Text = $iarLayout; Pattern = '__ICFEDIT_size_cstack__\s*=\s*0x4000\s*;' },
+    @{ Name = 'IAR MSP size with ROM reservation'; Text = $iarLayout; Pattern = '__ICFEDIT_size_cstack__\s*=\s*0x3FE0\s*;' },
     @{ Name = 'IAR fixed MSP base'; Text = $iarLayout; Pattern = '__atlas_msp_start__\s*=\s*0x2001C000\s*;' },
     @{ Name = 'IAR fixed guard base'; Text = $iarLayout; Pattern = '__atlas_msp_guard_start__\s*=\s*0x2001BF00\s*;' },
     @{ Name = 'IAR explicit stack placement'; Text = $iarLayout; Pattern = 'place at address mem:__atlas_msp_start__\s*\{\s*block CSTACK\s*\}' },

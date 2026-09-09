@@ -12,6 +12,7 @@
 #include "atlas_bringup.h"
 #include "atlas_build.h"
 #include "atlas_bringup_protocol.h"
+#include "atlas_boot.h"
 #include "atlas_expansion.h"
 #include "atlas_rtos.h"
 #include "atlas_storage.h"
@@ -59,6 +60,7 @@ typedef struct
     AtlasBno085Health bno_health;
     uint32_t bno_pending_length, bno_intn_low, bno_initialized;
     uint32_t led_commanded, led_gates, led_initialized, led_inhibited;
+    uint32_t buzzer_playing, buzzer_note, buzzer_hz, buzzer_status;
     uint32_t ble_received, radio_received;
     uint8_t ble_rx[32], radio_rx[32], ble_length, radio_length;
     char ble_model[ATLAS_BLE_IDENTITY_CAPACITY], ble_firmware[ATLAS_BLE_IDENTITY_CAPACITY];
@@ -98,6 +100,99 @@ static uint32_t frame_sequence, parser_errors, response_drops, last_id;
 static BenchPending pending;
 static uint32_t pending_ticket, pending_id, pending_epoch;
 static bool hello_due;
+static bool dfu_pending;
+static uint32_t dfu_started, tx_queued, tx_completed_base, dfu_drop_base;
+
+/** @brief Owner-supplied notes with chosen octaves, tone lengths and silent gaps. */
+typedef struct
+{
+    uint16_t hz, tone_ms, gap_ms;
+} BenchNote;
+/* These pitches reproduce only the owner's supplied note sequence; timing and
+ * octaves are chosen for this simplified piezo arrangement (1–10 kHz range). */
+static const BenchNote bench_march[] = {
+    /* G G G -> E B G */
+    {1568, 350, 75}, {1568, 350, 75}, {1568, 350, 75},
+    {1319, 250, 50}, {1976, 150, 50}, {1568, 450, 150},
+    /* D D D -> E B G */
+    {2349, 350, 75}, {2349, 350, 75}, {2349, 350, 75},
+    {1319, 250, 50}, {1976, 150, 50}, {1568, 450, 150},
+    /* G G G -> F# F E -> E A C# C B B A B */
+    {3136, 350, 50}, {3136, 350, 50}, {3136, 350, 50},
+    {2960, 200, 30}, {2794, 200, 30}, {2637, 300, 50},
+    {2637, 150, 40}, {1760, 150, 40}, {2217, 250, 40}, {2093, 150, 40},
+    {1976, 150, 40}, {1976, 300, 40}, {1760, 150, 40}, {1976, 350, 120},
+    /* E B E -> G E B G */
+    {1319, 350, 50}, {1976, 150, 50}, {1319, 350, 50},
+    {1568, 350, 50}, {1319, 250, 50}, {1976, 150, 50}, {1568, 650, 0}
+};
+#define BENCH_MARCH_NOTES (sizeof(bench_march) / sizeof(bench_march[0]))
+static volatile bool melody_active; /* Owner writes; console only gates DFU. */
+static uint32_t melody_started, melody_epoch, melody_slot;
+static AtlasStatus melody_status;
+
+/** @brief Cancel playback in the sole TIM15 owner, including a silent gap. */
+static void bench_melody_stop(void)
+{
+    AtlasBuzzer_Stop(&bench_board->buzzer);
+    melody_slot = UINT32_MAX;
+    melody_active = false;
+}
+
+/** @brief Advance by elapsed time without blocking or replaying overdue notes. */
+static void bench_melody_service(void)
+{
+    if (!melody_active)
+        return;
+    AtlasUsbHealth usb;
+    if (watchdog_fault != 0U || melody_epoch != link_epoch ||
+        !AtlasUsb_GetHealth(&usb) || !usb.configured || !usb.dtr)
+    {
+        bench_melody_stop();
+        return;
+    }
+    const uint32_t elapsed = (uint32_t)(HAL_GetTick() - melody_started);
+    uint32_t end = 0U;
+    for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
+    {
+        const uint32_t tone_end = end + bench_march[i].tone_ms;
+        end = tone_end + bench_march[i].gap_ms;
+        if (elapsed >= end)
+            continue;
+        const bool silent = elapsed >= tone_end;
+        const uint32_t slot = 2U * i + (silent ? 1U : 0U);
+        if (slot != melody_slot)
+        {
+            AtlasBuzzer_Stop(&bench_board->buzzer);
+            melody_slot = slot;
+            if (!silent)
+            {
+                melody_status = AtlasBuzzer_Beep(&bench_board->buzzer,
+                                                 bench_march[i].hz, tone_end - elapsed);
+                if (melody_status != ATLAS_OK)
+                    bench_melody_stop();
+            }
+        }
+        return;
+    }
+    bench_melody_stop();
+}
+
+/** @brief Start one bounded melody; a second request never restarts it.
+ * @return Initial tone result, or BUSY while the previous melody is playing. */
+static AtlasStatus bench_melody_start(void)
+{
+    if (melody_active)
+        return ATLAS_ERROR_BUSY;
+    melody_status = ATLAS_OK;
+    melody_started = HAL_GetTick();
+    melody_epoch = link_epoch;
+    melody_slot = UINT32_MAX;
+    melody_active = true;
+    bench_melody_service();
+    return melody_active ? melody_status :
+           (melody_status == ATLAS_OK ? ATLAS_ERROR_STATE : melody_status);
+}
 
 /** @brief Copy a bounded literal/result string with guaranteed termination.
  * @param destination Output. @param capacity Bytes. @param source Input. */
@@ -131,6 +226,10 @@ static void bench_publish(void)
     working.led_gates = AtlasLed_ReadGateMask(&bench_board->led);
     working.led_initialized = bench_board->led.initialized ? 1U : 0U;
     working.led_inhibited = bench_board->led.output_inhibited ? 1U : 0U;
+    working.buzzer_playing = melody_active ? 1U : 0U;
+    working.buzzer_note = melody_active ? melody_slot / 2U + 1U : 0U;
+    working.buzzer_hz = bench_board->buzzer.running ? bench_board->buzzer.frequency_hz : 0U;
+    working.buzzer_status = (uint32_t)melody_status;
     working.lsm_interrupts = bench_board->lsm6dsv16b.health.interrupt_count;
     working.ble_command = bench_board->ble.command_mode;
     working.ble_dtr = AtlasBle_IsDtrAsserted(&bench_board->ble);
@@ -304,8 +403,15 @@ static AtlasStatus bench_execute(const AtlasBenchCommand *command, BenchReply *r
         return AtlasLed_SetColor(&bench_board->led, (AtlasLedColor)command->argument[0]);
     case ATLAS_BENCH_BEEP:
         return AtlasBuzzer_Beep(&bench_board->buzzer, 4800U, 200U);
+    case ATLAS_BENCH_MARCH:
+    {
+        const AtlasStatus status = bench_melody_start();
+        bench_text(reply->detail, sizeof(reply->detail),
+                   "Owner-provided march scheduled; stop cancels playback");
+        return status;
+    }
     case ATLAS_BENCH_STOP:
-        AtlasBuzzer_Stop(&bench_board->buzzer);
+        bench_melody_stop();
         return AtlasLed_SetColor(&bench_board->led, ATLAS_LED_OFF);
     case ATLAS_BENCH_BLE_PROFILE:
         return AtlasBle_ConfigureSps(&bench_board->ble, "AtlasBench", false);
@@ -349,6 +455,7 @@ static void bench_owner_task(void *argument)
     (void)argument;
     for (;;)
     {
+        bench_melody_service();
         bench_sample();
         (void)AtlasExpansion_Service(false);
         BenchWork work;
@@ -360,10 +467,12 @@ static void bench_owner_task(void *argument)
             if (watchdog_fault != 0U || work.epoch != link_epoch || !AtlasUsb_GetHealth(&usb) ||
                 !usb.configured || !usb.dtr)
                 reply.status = ATLAS_ERROR_STATE;
+            else if (work.command.operation == ATLAS_BENCH_MARCH && melody_active)
+                reply.status = ATLAS_ERROR_BUSY;
             else
             {
-                /* A previously scheduled beep must not last through a slow AT probe. */
-                AtlasBuzzer_Stop(&bench_board->buzzer);
+                /* Stop tones/melodies before another operation can delay service. */
+                bench_melody_stop();
                 taskENTER_CRITICAL();
                 worker_deadline = HAL_GetTick() + BENCH_OPERATION_MS;
                 worker_busy = true;
@@ -448,7 +557,7 @@ static void bench_hello(void)
     /* Leading LF terminates any partial record left in the host on reconnect. */
     AtlasBench_JsonRaw(
         &json, "\n{\"type\":\"hello\",\"profile\":\"bringup\",\"version\":\"" ATLAS_BRINGUP_VERSION
-               "\",\"pwm_pyro_inhibited\":true,\"led_inhibited\":true");
+               "\",\"pwm_pyro_inhibited\":true,\"led_inhibited\":true,\"software_dfu\":true,\"buzzer_melody\":true");
     bench_field(&json, "schema", ATLAS_BENCH_SCHEMA);
     bench_field(&json, "clock_hz", SystemCoreClock);
     bench_field(&json, "device_id", DBGMCU->IDCODE);
@@ -678,6 +787,12 @@ static void bench_status(void)
     bench_field(&j, "gates", b->led_gates);
     bench_field(&j, "initialized", b->led_initialized);
     bench_field(&j, "inhibited", b->led_inhibited);
+    AtlasBench_JsonRaw(&j, "},\"buzzer\":{\"playing\":");
+    AtlasBench_JsonU32(&j, b->buzzer_playing);
+    bench_field(&j, "note", b->buzzer_note);
+    bench_field(&j, "notes", (uint32_t)BENCH_MARCH_NOTES);
+    bench_field(&j, "hz", b->buzzer_hz);
+    bench_field(&j, "status", b->buzzer_status);
     AtlasBench_JsonRaw(&j, "},\"sd\":{\"start\":");
     AtlasBench_JsonU32(&j, storage_start);
     bench_field(&j, "card", sd.card_detected ? 1U : 0U);
@@ -776,6 +891,18 @@ static void bench_send_reply(void)
     reply_head = (reply_head + 1U) % BENCH_REPLY_COUNT;
     --reply_count;
 }
+/** @brief Require idle services and deasserted outputs before entering ROM.
+ * @return True only when current snapshots prove a quiescent diagnostic image. */
+static bool bench_dfu_ready(void)
+{
+    AtlasIoSnapshot io;
+    AtlasStorageHealth sd;
+    return !worker_busy && !melody_active && watchdog_fault == 0U && pending == BENCH_PENDING_NONE &&
+           AtlasIo_GetSnapshot(&io) && AtlasStorage_GetHealth(&sd) &&
+           io.pwm_enabled_mask == 0U && !io.pyro.software_armed && io.gpio_commanded_high == 0U &&
+           !sd.mounted;
+}
+
 /** @brief Route one request; busy/old IDs never execute and are never automatically retried.
  * @param command Parsed command. */
 static void bench_dispatch(const AtlasBenchCommand *command)
@@ -789,6 +916,12 @@ static void bench_dispatch(const AtlasBenchCommand *command)
         return;
     }
     last_id = command->id;
+    if (dfu_pending)
+    {
+        reply.status = ATLAS_ERROR_BUSY;
+        bench_reply(&reply);
+        return;
+    }
     if (command->operation == ATLAS_BENCH_HELLO || command->operation == ATLAS_BENCH_STATUS)
     {
         if (command->operation == ATLAS_BENCH_HELLO)
@@ -800,6 +933,27 @@ static void bench_dispatch(const AtlasBenchCommand *command)
     if (pending != BENCH_PENDING_NONE || watchdog_fault != 0U)
     {
         reply.status = ATLAS_ERROR_BUSY;
+        bench_reply(&reply);
+        return;
+    }
+    if (command->operation == ATLAS_BENCH_DFU)
+    {
+        AtlasUsbHealth usb;
+        if (command->argument[0] != HAL_GetUIDw0() ||
+            command->argument[1] != HAL_GetUIDw1() ||
+            command->argument[2] != HAL_GetUIDw2() || !bench_dfu_ready() ||
+            !AtlasUsb_GetHealth(&usb) || !usb.configured || !usb.dtr)
+        {
+            reply.status = ATLAS_ERROR_STATE;
+            bench_text(reply.detail, sizeof(reply.detail), "DFU requires matching UID, idle outputs and unmounted SD");
+        }
+        else
+        {
+            dfu_pending = true;
+            dfu_started = HAL_GetTick();
+            dfu_drop_base = usb.tx_dropped_bytes;
+            bench_text(reply.detail, sizeof(reply.detail), "DFU accepted; waiting for USB reply completion before reset");
+        }
         bench_reply(&reply);
         return;
     }
@@ -911,6 +1065,27 @@ static void bench_results(void)
         bench_reply(&reply);
     }
 }
+/** @brief Complete only an acknowledged same-session DFU transition.
+ * @param usb Current USB counters. @param online Current DTR/configured state. */
+static void bench_dfu_service(const AtlasUsbHealth *usb, bool online)
+{
+    if (!dfu_pending)
+        return;
+    if (!online || usb->tx_dropped_bytes != dfu_drop_base ||
+        (uint32_t)(HAL_GetTick() - dfu_started) > 3000U || !bench_dfu_ready())
+    {
+        dfu_pending = false;
+        ++response_drops;
+    }
+    else if (reply_count == 0U && tx_offset == tx_length &&
+             (uint32_t)(usb->tx_completed_bytes - tx_completed_base) == tx_queued)
+    {
+        dfu_pending = false;
+        AtlasIo_EmergencyStop();
+        AtlasBoot_RequestDfu();
+    }
+}
+
 /** @brief Handle framing, session changes and loss without accessing sensor drivers.
  * @param argument Unused. */
 static void bench_console_task(void *argument)
@@ -934,6 +1109,9 @@ static void bench_console_task(void *argument)
             reply_head = reply_count = 0U;
             hello_due = online;
             dropped = usb.rx_dropped_bytes;
+            dfu_pending = false; /* A disconnected/unobserved request never replays. */
+            tx_queued = 0U;
+            tx_completed_base = usb.tx_completed_bytes;
         }
         if (usb.rx_dropped_bytes != dropped)
         {
@@ -969,7 +1147,7 @@ static void bench_console_task(void *argument)
             }
             else if (reply_count != 0U)
                 bench_send_reply();
-            else if ((uint32_t)(HAL_GetTick() - last_status) >= BENCH_PERIOD_MS)
+            else if (!dfu_pending && (uint32_t)(HAL_GetTick() - last_status) >= BENCH_PERIOD_MS)
             {
                 last_status = HAL_GetTick();
                 bench_status();
@@ -981,8 +1159,12 @@ static void bench_console_task(void *argument)
             if (length > ATLAS_USB_PACKET_CAPACITY)
                 length = ATLAS_USB_PACKET_CAPACITY;
             if (AtlasUsb_Write((const uint8_t *)tx + tx_offset, length) == ATLAS_OK)
+            {
                 tx_offset += length;
+                tx_queued += (uint32_t)length;
+            }
         }
+        bench_dfu_service(&usb, online);
         ++console_heartbeat;
         vTaskDelay(pdMS_TO_TICKS(2U));
     }

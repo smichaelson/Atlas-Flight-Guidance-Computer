@@ -1,5 +1,7 @@
 # Atlas software review record
 
+The newest dashboard, software-DFU and 1.1.1 buzzer melody work is recorded in the [Ground Station review](GROUND_STATION_REVIEW.md), including three sequential review passes and physical tests still pending. It supersedes earlier stack-size/build-hash figures for the new images. The GNSS/ADC qualification findings below remain open.
+
 Latest update: 2026-09-04. The [GNSS/RGB follow-up](#2026-09-04-gnss-startup-and-rgb-hardware-inhibit-follow-up) records the newest board log, stale-UART startup correction, manual GNSS recovery, diagnostic telemetry, and confirmed Q6-Q8 hardware inhibit. It supersedes the provisional LED conclusion in the [earlier hardware follow-up](#2026-09-03-bno085-and-led-follow-up). The [PCB bring-up review](#pcb-bring-up-review) covers the diagnostic image, dashboard and startup procedure. Earlier build hashes/counts below are historical unless identified as latest. All source changes stay within the repository; the separate original Atlas folder is untouched.
 
 **Software implementation and offline regression coverage are in place. Physical acceptance and flight release remain unapproved.** Version 1.0.2 inhibits RGB globally on rev-0.1; the Bringup image additionally permanently inhibits PWM/pyro. Normal energetic-output configuration remains unqualified/disabled by default. The review passes are sequential author checks, not independent safety approvals.

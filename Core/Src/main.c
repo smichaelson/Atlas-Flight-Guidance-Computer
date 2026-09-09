@@ -31,6 +31,7 @@
 #include "atlas_rtos.h"
 #include "atlas_build.h"
 #include "atlas_bringup.h"
+#include "atlas_boot.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -137,7 +138,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  AtlasBoot_EarlyCheck();
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/

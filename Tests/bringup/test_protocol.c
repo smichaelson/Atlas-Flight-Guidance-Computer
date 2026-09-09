@@ -24,6 +24,7 @@ int main(void)
     const char *valid[] = {"1 hello",
                            "2 status",
                            "3 beep",
+                           "33 march",
                            "4 stop",
                            "5 led 0",
                            "7 gpio 0",
@@ -51,6 +52,11 @@ int main(void)
                            "29 i2c 8 0",
                            "30 i2c 119 255",
                            "4294967295 utc 2099 12 31 23 59 59"};
+    assert(AtlasBench_Parse("31 bootloader 1 2 4294967295", &c));
+    assert(c.operation == ATLAS_BENCH_DFU && c.argument[2] == UINT32_MAX);
+    assert(!AtlasBench_Parse("32 bootloader", &c));
+    assert(!AtlasBench_Parse("32 bootloader 1 2 4294967296", &c));
+    assert(!AtlasBench_Parse("32 bootloader 1 2 3 extra", &c));
     for (unsigned i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i)
         assert(AtlasBench_Parse(valid[i], &c));
     const char *invalid[] = {"",
@@ -65,6 +71,8 @@ int main(void)
                              "1 sd",
                              "1 sd format",
                              "1 pyro fire",
+                             "1 march repeat",
+                             "1 march 100000",
                              "1 pwm 1",
                              "1 gpio 8",
                               "1 gpio -1",

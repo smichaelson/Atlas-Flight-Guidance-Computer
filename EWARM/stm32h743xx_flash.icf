@@ -11,7 +11,8 @@ define symbol __ICFEDIT_region_RAM_end__       = 0x2001FFFF;
 define symbol __ICFEDIT_region_ITCMRAM_start__ = 0x00000000;
 define symbol __ICFEDIT_region_ITCMRAM_end__   = 0x0000FFFF;
 /*-Sizes-*/
-define symbol __ICFEDIT_size_cstack__ = 0x4000;
+/* Reserve the top 32 bytes for the H743 ROM Go contract (AN2606). */
+define symbol __ICFEDIT_size_cstack__ = 0x3FE0;
 define symbol __ICFEDIT_size_heap__   = 0x0;
 /**** End of ICF editor section. ###ICF###*/
 
@@ -30,7 +31,7 @@ define block CSTACK    with alignment = 8, size = __ICFEDIT_size_cstack__   { };
 define block HEAP      with alignment = 8, size = __ICFEDIT_size_heap__     { };
 
 initialize by copy { readwrite };
-do not initialize  { section .noinit, section .atlas_dma };
+do not initialize  { section .noinit, section .atlas_dma, section .atlas_boot };
 place in AXI_DMA_region { section .atlas_dma };
 place at address mem:__atlas_msp_start__ { block CSTACK };
 
