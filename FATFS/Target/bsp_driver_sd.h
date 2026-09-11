@@ -37,6 +37,11 @@ extern "C" {
 #define SD_TRANSFER_ERROR      ((uint8_t)2U)
 #define SD_PRESENT             ((uint8_t)1U)
 #define SD_NOT_PRESENT         ((uint8_t)0U)
+/** @brief First failing step since the last explicit mount. Retained across reset.
+ * Stages: 0 none, 1 detect, 2 initialize, 3 bus width, 4 read, 5 write,
+ * 6 card state, 7 geometry. HAL error is captured before the handle is cleared. */
+typedef struct { uint32_t stage, hal_status, hal_error, detect_edges; } BSP_SD_Diagnostics;
+void BSP_SD_GetDiagnostics(BSP_SD_Diagnostics *diagnostics);
 /** @brief Probe/configure optional media. @return MSD status. */
 uint8_t BSP_SD_Init(void);
 /** @brief Reset SDMMC1 and invalidate the handle; storage-owner context only. */

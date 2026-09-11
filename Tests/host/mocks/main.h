@@ -65,7 +65,8 @@ typedef struct
     uint32_t Prescaler;
 } TIM_Base_InitTypeDef;
 
-typedef struct { uint32_t CR1; } TIM_TypeDef;
+typedef struct { uint32_t CR1, EGR; } TIM_TypeDef;
+#define TIM_EGR_UG 1U
 typedef enum
 {
     HAL_TIM_STATE_RESET = 0U,

@@ -93,6 +93,25 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
         *command = parsed;
         return true;
     }
+    /* Parsed everywhere so ordinary Bringup explicitly returns UNSUPPORTED.
+     * Only ServoBench compiles an executor; no generic PWM/pyro writes exist. */
+    if (strcmp(token[1], "servo") == 0)
+    {
+        if (count == 3U && strcmp(token[2], "stop") == 0)
+            parsed.operation = ATLAS_BENCH_SERVO_STOP;
+        else if (count == 6U && strcmp(token[2], "enable") == 0 &&
+                 bench_number(token[3], &parsed.argument[0]) && parsed.argument[0] >= 1U && parsed.argument[0] <= 8U &&
+                 bench_number(token[4], &parsed.argument[1]) && parsed.argument[1] >= 900U && parsed.argument[1] < 1520U &&
+                 bench_number(token[5], &parsed.argument[2]) && parsed.argument[2] > 1520U && parsed.argument[2] <= 2100U)
+            parsed.operation = ATLAS_BENCH_SERVO_ENABLE;
+        else if (count == 5U && strcmp(token[2], "set") == 0 &&
+                 bench_number(token[3], &parsed.argument[0]) && parsed.argument[0] >= 1U && parsed.argument[0] <= 8U &&
+                 bench_number(token[4], &parsed.argument[1]) && parsed.argument[1] >= 900U && parsed.argument[1] <= 2100U)
+            parsed.operation = ATLAS_BENCH_SERVO_SET;
+        else return false;
+        *command = parsed;
+        return true;
+    }
     if (strcmp(token[1], "probe") == 0 && count == 3U)
     {
         static const char *const devices[] = {"adxl", "lsm",  "mmc", "baro",

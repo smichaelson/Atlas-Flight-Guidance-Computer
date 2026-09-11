@@ -7,7 +7,7 @@
 | Function | Contract |
 |---|---|
 | `AtlasBuzzer_Init()` | Confirms TIM15, derives its kernel clock, programs opposite-phase channels at the resonant default, and leaves both outputs stopped. |
-| `AtlasBuzzer_Start()` | Reprograms a bounded 1-10 kHz frequency and starts both differential PWM channels. |
+| `AtlasBuzzer_Start()` | Reprograms a bounded 0.3–10 kHz frequency and starts both differential PWM channels. |
 | `AtlasBuzzer_Beep()` | Starts a nonblocking tone with a wrap-safe requested expiry; actual stop depends on service. |
 | `AtlasBuzzer_Service()` | Stops a scheduled beep when its deadline is reached. |
 | `AtlasBuzzer_Stop()` | Stops both channels to eliminate differential drive. |
@@ -20,7 +20,7 @@ TIM15 ownership, opposite PWM modes, frequency bounds and ordinary timed stop pa
 
 ## RTOS access
 
-Queue `ATLAS_RTOS_COMMAND_BUZZER_BEEP` with a validated 1–10 kHz frequency and bounded nonzero duration, or queue `BUZZER_STOP`. `AtlasBoard_Service()` runs in `AtlasIO` and ends timed tones without application polling. The direct example below is limited to pre-scheduler driver testing; a runtime direct call would violate TIM15/driver ownership.
+Queue `ATLAS_RTOS_COMMAND_BUZZER_BEEP` with a validated 0.3–10 kHz frequency and bounded nonzero duration, or queue `BUZZER_STOP`. `AtlasBoard_Service()` runs in `AtlasIO` and ends timed tones without application polling. The direct example below is limited to pre-scheduler driver testing; a runtime direct call would violate TIM15/driver ownership.
 
 ## Board contract
 
@@ -32,8 +32,8 @@ Queue `ATLAS_RTOS_COMMAND_BUZZER_BEEP` with a validated 1–10 kHz frequency and
 | High-side waveform pin | PE6 / TIM15 channel 2 |
 | Drive method | Two equal-duty outputs, PWM1 and PWM2, logically opposite |
 | Recommended default | 4.8 kHz square wave |
-| Allowed API range | 1,000 through 10,000 Hz |
-| Startup | Silent; timer channels are not started |
+| Allowed API range | 300 through 10,000 Hz |
+| Startup | Driver initialization leaves outputs stopped; diagnostic 1.2.1 owner plays a four-note chime once |
 
 With the current 100 MHz TIM15 kernel and prescaler 99, the PWM counter is 1 MHz. The rounded 4.8 kHz setup uses 208 counts and therefore produces approximately 4,807.7 Hz. Runtime setup intentionally overrides the CubeMX-generated same-phase 4 kHz staging values; a future regeneration must preserve or deliberately incorporate the driver behavior.
 
@@ -69,7 +69,7 @@ Always measure **PE5 minus PE6** as well as each pin to ground. Stop must leave 
 1. Verify both pins are electrically benign through reset, initialization, watchdog reset, and stop.
 2. At 4.8 kHz, scope PE5, PE6, and PE5-PE6; require approximately 50% duty and 180-degree logical phase opposition.
 3. Measure actual frequency and compare with `buzzer.frequency_hz`.
-4. Exercise 1 kHz, 4.8 kHz, and 10 kHz plus invalid boundary requests.
+4. Exercise 300 Hz, 311 Hz, 4.8 kHz, and 10 kHz plus invalid boundary requests.
 5. Measure stop latency under normal I/O, maintenance and deliberate service delay; test HAL tick wrap. Do not require an exact requested duration from this service-dependent implementation.
 6. Confirm differential peak voltage remains within the exact sounder specification for board supply/tolerance and that neither MCU output exceeds current/electrical limits.
 7. Characterize sound pressure, enclosure resonance, temperature, power noise, EMI, and audibility for the intended alerts.
@@ -78,10 +78,12 @@ Always measure **PE5 minus PE6** as well as each pin to ground. Stop must leave 
 
 - The buzzer is an indicator, not a safety annunciator with independent supervision.
 - The driver has no general melody/priority queue, volume control, fault feedback, or acoustic self-test.
-- The Bringup 1.1.1 owner adds one fixed, nonblocking 33-note melody through the [Ground Station](../../GROUND_STATION.md#play-the-buzzer-melody). It is a separate diagnostic sequencer, not a general driver priority queue; the normal application API is unchanged.
+- The diagnostic 1.2.2 owner includes the one-shot startup chime and a fixed, nonblocking 42-note melody through the [Ground Station](../../GROUND_STATION.md#play-the-buzzer-melody). It is a separate diagnostic sequencer, not a general driver priority queue; the normal application API is unchanged.
 - A blocked `AtlasIO` task can delay a scheduled stop until the watchdog resets the MCU; continuous tones require explicit control discipline.
 - Confirm lifecycle and exact part specifications when procuring a replacement; any substitution needs electrical/acoustic requalification.
 
 ## Primary reference
 
 - Murata, [sound-components catalog entry for PKMCS0909E48H0-R1](https://www.murata.com/~/media/webrenewal/support/library/catalog/products/k70e.ashx?la=en-us) (4.8 kHz external square-wave drive; consult the part specification for limits).
+
+Version 1.2.2 restores the bridge high-G repeat (new note 22) and four-second opening phrase boundaries. The owner-approved 311–784 Hz range and startup chime are unchanged.

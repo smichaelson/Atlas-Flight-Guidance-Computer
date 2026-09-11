@@ -10,6 +10,7 @@ from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import hashlib
 import math
 from pathlib import Path
 import secrets
@@ -22,6 +23,8 @@ from protocol import Decoder, MODULES, Session, observations, validate
 import update_firmware as updater
 
 WEB = Path(__file__).parent / "web"
+ROOT = Path(__file__).resolve().parents[2]
+ROOT_ID = hashlib.sha256(str(ROOT).casefold().encode('utf-8')).hexdigest()[:24]
 
 
 def simulated(ms: int) -> dict:
@@ -67,10 +70,12 @@ class Station:
         self.record_full = False
         self.sequence = 0
         self.generation = 0
+        self.servo_control_epoch = 0
         self.started = time.monotonic()
         self.last_demo = 0.0
         self.batch: list[str] = []
         self.confirmed = False
+        self.servo_approved = None
         self.handshake_deadline = 0.0
         self.manifest = manifest
         self.frozen = None
@@ -85,15 +90,24 @@ class Station:
 
     def disconnect(self):
         if self.serial:
-            self.serial.close()
+            try:
+                self.serial.dtr = False
+            except (OSError, ValueError):
+                pass  # A removed device cannot accept line changes; clear local state.
+            try:
+                self.serial.close()
+            except (OSError, ValueError):
+                pass
         self.serial = None
         self.port = ""
         self.mode = "disconnected"
         self.batch.clear()
         self.confirmed = False
+        self.servo_approved = None
         self.handshake_deadline = 0.0
         self.recording = False
         self.generation += 1
+        self.servo_control_epoch += 1
         self.session, self.decoder = Session(), Decoder()
         self.history.clear()
 
@@ -170,16 +184,16 @@ class Station:
         while not self.stop.wait(.025):
             self.tick()
 
-    def snapshot(self):
+    def snapshot(self, compact=False):
         with self.lock:
             now = time.monotonic()
             fresh = self.session.fresh(now)
             age = now-self.session.received_at
-            return dict(mode=self.mode, port=self.port, generation=self.generation,
+            return dict(mode=self.mode, port=self.port, generation=self.generation, servo_control_epoch=self.servo_control_epoch,
                         fresh=fresh, age_ms=round(age*1000) if math.isfinite(age) else None,
                         hello=self.session.hello, status=self.session.status,
-                        rows=observations(self.session.status) if self.session.status else [],
-                        history=list(self.history), events=list(self.events),
+                        rows=observations(self.session.status) if self.session.status and not compact else [],
+                        history=[] if compact else list(self.history), events=[] if compact else list(self.events),
                         blocked=self.session.blocked, pending=self.session.pending.verb if self.session.pending else None,
                         batch=list(self.batch), confirmed=self.confirmed,
                         decoder_errors=self.decoder.errors, recording=self.recording,
@@ -256,6 +270,8 @@ class Station:
                 verb = body.get("verb", "")
                 if not isinstance(verb, str) or len(verb) > 90 or verb.startswith("bootloader"):
                     raise ValueError("Use the verified firmware-update workflow.")
+                if verb.startswith('servo '):
+                    raise ValueError('Use the dedicated servo controls')
                 if self.batch:
                     raise ValueError("Wait for the sensor sequence to finish.")
                 # Fixture/RF/media mutations carry an additional deliberate UI acknowledgement.
@@ -263,6 +279,35 @@ class Station:
                     if body.get("action_confirmed") is not True:
                         raise ValueError("Review and confirm this specific bench test.")
                 self.send(verb)
+            elif action == 'servo-stop':
+                self.batch.clear()
+                self.servo_approved = None
+                self.servo_control_epoch += 1
+                self.send('servo stop')
+            elif action == 'servo':
+                if (type(body.get('generation')) is not int or body['generation'] != self.generation or
+                        type(body.get('control_epoch')) is not int or body['control_epoch'] != self.servo_control_epoch):
+                    raise ValueError('Servo control session changed; reload fresh dashboard state')
+                operation, channel = body.get('operation'), body.get('channel')
+                if type(channel) is not int or not 1 <= channel <= 8:
+                    raise ValueError('Select servo channel 1–8')
+                if self.batch:
+                    raise ValueError('Wait for sensor probing to finish')
+                if operation == 'enable':
+                    minimum, maximum = body.get('minimum_us'), body.get('maximum_us')
+                    if (body.get('confirmed') is not True or type(minimum) is not int or type(maximum) is not int or
+                            not 900 <= minimum < 1520 < maximum <= 2100):
+                        raise ValueError('Confirm free motion/J5 isolation and bounded travel')
+                    self.send(f'servo enable {channel} {minimum} {maximum}')
+                    self.servo_control_epoch += 1
+                    self.servo_approved = (self.generation, channel)
+                elif operation == 'set':
+                    pulse = body.get('pulse_us')
+                    if self.servo_approved != (self.generation, channel) or type(pulse) is not int or not 900 <= pulse <= 2100:
+                        raise ValueError('Explicitly enable this channel before moving it')
+                    self.send(f'servo set {channel} {pulse}')
+                else:
+                    raise ValueError('Unknown servo operation')
             elif action == "sensors":
                 if self.mode != "live" or not self.session.fresh(time.monotonic()) or not self.confirmed:
                     raise ValueError("Need a confirmed connection and fresh telemetry.")
@@ -287,10 +332,14 @@ class Station:
                 self.records.clear()
                 self.record_full = False
             elif action == "firmware-check":
-                raw = body.get("manifest", str(self.manifest))
+                raw = body.get("manifest")
+                if raw is None:
+                    raw = str(updater.find_manifest(body['profile']) if 'profile' in body else self.manifest)
                 if not isinstance(raw, str) or len(raw) > 1024:
                     raise ValueError("Invalid manifest path.")
-                evidence, self.frozen = updater.prepare(Path(raw))
+                path = Path(raw).expanduser()
+                if not path.is_absolute(): path = ROOT / path
+                evidence, self.frozen = updater.prepare(path)
                 self.firmware = dict(state="checked", message="Image hashes, target and flash addresses verified.",
                                      evidence=evidence, key=secrets.token_urlsafe(24))
             elif action == "firmware-update":
@@ -365,12 +414,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         if self.path == "/":
-            self.reply((WEB / "index.html").read_text(encoding="utf-8").replace("__ATLAS_TOKEN__", self.server.token), content_type="text/html; charset=utf-8")
-        elif self.path in ("/app.js", "/style.css"):
+            self.reply((WEB / "index.html").read_text(encoding="utf-8").replace("__ATLAS_TOKEN__", self.server.token).replace('__ATLAS_ROOT_ID__', ROOT_ID), content_type="text/html; charset=utf-8")
+        elif self.path in ("/app.js", "/servo_motion.js", "/servos.js", "/style.css"):
             kind = "text/javascript" if self.path.endswith(".js") else "text/css"
             self.reply((WEB / self.path[1:]).read_bytes(), content_type=kind + "; charset=utf-8")
         elif self.path == "/api/state":
             self.reply(self.server.station.snapshot())
+        elif self.path == "/api/servo-state":
+            # Same current measurements and control gates, without replaying sensor history.
+            self.reply(self.server.station.snapshot(compact=True))
         elif self.path == "/api/ports":
             try:
                 self.reply(self.server.station.ports())

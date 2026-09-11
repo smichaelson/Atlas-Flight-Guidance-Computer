@@ -418,7 +418,10 @@ static void test_buzzer_differential_contract(void)
     CHECK(AtlasTest_GetTimerStartedMask() == 0U);
     CHECK(buzzer.frequency_hz == 4807U);
 
-    CHECK(AtlasBuzzer_Start(&buzzer, 999U) == ATLAS_ERROR_ARGUMENT);
+    CHECK(AtlasBuzzer_Start(&buzzer, 299U) == ATLAS_ERROR_ARGUMENT);
+    CHECK(AtlasBuzzer_Start(&buzzer, 311U) == ATLAS_OK);
+    CHECK(timer.autoreload == 3214U && timer.Instance->EGR == TIM_EGR_UG);
+    AtlasBuzzer_Stop(&buzzer);
     CHECK(AtlasBuzzer_Beep(&buzzer, 4800U, 100U) == ATLAS_OK);
     CHECK(AtlasTest_GetTimerStartedMask() ==
           ((1UL << TIM_CHANNEL_1) | (1UL << TIM_CHANNEL_2)));

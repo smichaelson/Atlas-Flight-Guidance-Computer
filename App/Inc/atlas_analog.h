@@ -27,6 +27,10 @@ typedef struct
     uint16_t valid_mask, vdda_mv;
     int16_t die_temperature_c;
 } AtlasAnalogSample;
+/** @brief H743 VDDA from matching 16-bit live and factory VREFINT counts.
+ * @param raw Unshifted ADC3 data. @param factory_cal Factory value at 3300 mV.
+ * @return Rounded millivolts, or zero for invalid input. Caller checks rail limits. */
+uint32_t AtlasAnalog_VddaFromReference16(uint32_t raw, uint16_t factory_cal);
 /** @brief Convert raw 16-bit ranks using a measured, factory-calibrated reference.
  * @param sample Destination; timestamps/sequence are retained.
  * @param raw Ten raw ADC1 values, in generated rank order.

@@ -38,6 +38,20 @@ extern SD_HandleTypeDef hsd1;
 static uint8_t sd_initialized;
 static volatile uint32_t media_generation;
 static uint32_t mounted_generation;
+static BSP_SD_Diagnostics diagnostics;
+
+static void sd_failure(uint32_t stage, HAL_StatusTypeDef status)
+{
+    if (diagnostics.stage != 0U) return;
+    diagnostics.stage = stage;
+    diagnostics.hal_status = (uint32_t)status;
+    diagnostics.hal_error = hsd1.ErrorCode;
+}
+
+void BSP_SD_GetDiagnostics(BSP_SD_Diagnostics *output)
+{
+    if (output != NULL) { *output = diagnostics; output->detect_edges = media_generation; }
+}
 
 /** @brief Record either detect-switch edge; a replacement invalidates the old FAT. */
 void BSP_SD_DetectFromISR(void)
@@ -63,11 +77,13 @@ void BSP_SD_DeInit(void)
 uint8_t BSP_SD_Init(void)
 {
     BSP_SD_DeInit();
+    memset(&diagnostics, 0, sizeof(diagnostics));
     const uint32_t generation = media_generation;
-    if (BSP_SD_IsDetected() != SD_PRESENT) return MSD_ERROR_SD_NOT_PRESENT;
+    if (BSP_SD_IsDetected() != SD_PRESENT)
+    { sd_failure(1U, HAL_ERROR); return MSD_ERROR_SD_NOT_PRESENT; }
     AtlasTime_DelayMs(20U);
     if (BSP_SD_IsDetected() != SD_PRESENT || media_generation != generation)
-        return MSD_ERROR_SD_NOT_PRESENT;
+    { sd_failure(1U, HAL_ERROR); return MSD_ERROR_SD_NOT_PRESENT; }
     mounted_generation = generation;
     hsd1.Instance = SDMMC1;
     hsd1.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING;
@@ -76,8 +92,14 @@ uint8_t BSP_SD_Init(void)
     hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
     hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;
     hsd1.Init.ClockDiv = 1U; /* PLL2R 50 MHz / (2 * 1) = 25 MHz transfer clock. */
-    if ((HAL_SD_Init(&hsd1) != HAL_OK) ||
-        (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK))
+    HAL_StatusTypeDef status = HAL_SD_Init(&hsd1);
+    if (status != HAL_OK) sd_failure(2U, status);
+    else
+    {
+        status = HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
+        if (status != HAL_OK) sd_failure(3U, status);
+    }
+    if (status != HAL_OK)
     {
         BSP_SD_DeInit();
         return MSD_ERROR;
@@ -104,8 +126,9 @@ uint8_t BSP_SD_ReadBlocks(uint32_t *data, uint32_t address,
     if (!sd_initialized || data == NULL || count == 0U || timeout_ms == 0U ||
         media_generation != mounted_generation || BSP_SD_IsDetected() != SD_PRESENT)
         return MSD_ERROR;
-    return HAL_SD_ReadBlocks(&hsd1, (uint8_t *)data, address, count,
-                             timeout_ms) == HAL_OK &&
+    const HAL_StatusTypeDef status = HAL_SD_ReadBlocks(&hsd1, (uint8_t *)data, address, count, timeout_ms);
+    if (status != HAL_OK) sd_failure(4U, status);
+    return status == HAL_OK &&
            media_generation == mounted_generation &&
            BSP_SD_IsDetected() == SD_PRESENT ? MSD_OK : MSD_ERROR;
 }
@@ -121,8 +144,9 @@ uint8_t BSP_SD_WriteBlocks(uint32_t *data, uint32_t address,
     if (!sd_initialized || data == NULL || count == 0U || timeout_ms == 0U ||
         media_generation != mounted_generation || BSP_SD_IsDetected() != SD_PRESENT)
         return MSD_ERROR;
-    return HAL_SD_WriteBlocks(&hsd1, (uint8_t *)data, address, count,
-                              timeout_ms) == HAL_OK &&
+    const HAL_StatusTypeDef status = HAL_SD_WriteBlocks(&hsd1, (uint8_t *)data, address, count, timeout_ms);
+    if (status != HAL_OK) sd_failure(5U, status);
+    return status == HAL_OK &&
            media_generation == mounted_generation &&
            BSP_SD_IsDetected() == SD_PRESENT ? MSD_OK : MSD_ERROR;
 }
@@ -138,6 +162,7 @@ uint8_t BSP_SD_GetCardState(void)
     if (state == HAL_SD_CARD_TRANSFER) return SD_TRANSFER_OK;
     if ((state == HAL_SD_CARD_SENDING) || (state == HAL_SD_CARD_RECEIVING) ||
         (state == HAL_SD_CARD_PROGRAMMING)) return SD_TRANSFER_BUSY;
+    sd_failure(6U, HAL_ERROR);
     return SD_TRANSFER_ERROR;
 }
 
@@ -145,7 +170,9 @@ uint8_t BSP_SD_GetCardState(void)
 uint8_t BSP_SD_GetCardInfo(BSP_SD_CardInfo *info)
 {
     if (!BSP_SD_IsMediaCurrent() || info == NULL) return MSD_ERROR;
-    return HAL_SD_GetCardInfo(&hsd1, info) == HAL_OK && BSP_SD_IsMediaCurrent() ? MSD_OK : MSD_ERROR;
+    const HAL_StatusTypeDef status = HAL_SD_GetCardInfo(&hsd1, info);
+    if (status != HAL_OK) sd_failure(7U, status);
+    return status == HAL_OK && BSP_SD_IsMediaCurrent() ? MSD_OK : MSD_ERROR;
 }
 
 /** @brief Read J3 DET via PD3/R21 (active low). @return SD_PRESENT or SD_NOT_PRESENT. */

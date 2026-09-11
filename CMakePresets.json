@@ -6,8 +6,17 @@
             "hidden": true,
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/${presetName}",
-		    "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
+            "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
+            "cacheVariables": {}
+        },
+        {
+            "name": "ServoBench",
+            "displayName": "Atlas servo bench (PYRO INHIBITED)",
+            "inherits": "default",
             "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ATLAS_BRINGUP": "ON",
+                "ATLAS_SERVO_BENCH": "ON"
             }
         },
         {
@@ -16,7 +25,8 @@
             "inherits": "default",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "ATLAS_BRINGUP": "ON"
+                "ATLAS_BRINGUP": "ON",
+                "ATLAS_SERVO_BENCH": "OFF"
             }
         },
         {
@@ -24,7 +34,8 @@
             "inherits": "default",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "ATLAS_BRINGUP": "ON"
+                "ATLAS_BRINGUP": "ON",
+                "ATLAS_SERVO_BENCH": "OFF"
             }
         },
         {
@@ -32,7 +43,8 @@
             "inherits": "default",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "ATLAS_BRINGUP": "OFF"
+                "ATLAS_BRINGUP": "OFF",
+                "ATLAS_SERVO_BENCH": "OFF"
             }
         },
         {
@@ -40,11 +52,16 @@
             "inherits": "default",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "ATLAS_BRINGUP": "OFF"
+                "ATLAS_BRINGUP": "OFF",
+                "ATLAS_SERVO_BENCH": "OFF"
             }
         }
     ],
     "buildPresets": [
+        {
+            "name": "ServoBench",
+            "configurePreset": "ServoBench"
+        },
         {
             "name": "Bringup",
             "configurePreset": "Bringup"

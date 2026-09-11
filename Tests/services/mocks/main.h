@@ -32,7 +32,8 @@ struct DMA_HandleTypeDef {
 };
 typedef struct { uint32_t ISR, raw, selected_channel; } ADC_TypeDef;
 typedef struct { ADC_TypeDef *Instance; DMA_HandleTypeDef *DMA_Handle;
-    struct { uint32_t ScanConvMode,NbrOfConversion,EOCSelection; } Init;
+    struct { uint32_t ScanConvMode,NbrOfConversion,EOCSelection,OversamplingMode;
+        struct { uint32_t Ratio,RightBitShift,TriggeredMode,OversamplingStopReset; } Oversampling; } Init;
     uint32_t ErrorCode; } ADC_HandleTypeDef;
 typedef struct { uint32_t Channel,Rank,SamplingTime,SingleDiff,OffsetNumber; } ADC_ChannelConfTypeDef;
 typedef struct { uint32_t FADD; } RAMECC_MonitorTypeDef;
@@ -109,8 +110,15 @@ void TestSetPrimask(uint32_t mask);
 #define __HAL_DBGMCU_UnFreeze_TIM6() ((void)0)
 #define __HAL_PWR_GET_FLAG(flag) (false)
 #define __HAL_ADC_GET_FLAG(adc,flag) (((adc)->Instance->ISR & (flag)) != 0U)
-#define __HAL_ADC_CALC_VREFANALOG_VOLTAGE(raw,res) ((uint32_t)test_vref_cal * 3300U / (raw))
 #define __HAL_ADC_CALC_TEMPERATURE(vdda,raw,res) (30 + ((int32_t)(raw) - test_temp_cal1) / 100)
+#define ENABLE 1U
+#define ADC_RIGHTBITSHIFT_4 4U
+#define ADC_TRIGGEREDMODE_SINGLE_TRIGGER 0U
+#define ADC_REGOVERSAMPLING_CONTINUED_MODE 0U
+#define TIM_CHANNEL_1 0U
+#define TIM_CHANNEL_2 4U
+#define TIM_CHANNEL_3 8U
+#define TIM_CHANNEL_4 12U
 #define __HAL_TIM_SET_COMPARE(timer,channel,value) ((timer)->Instance->CCR[(channel)/4U] = (value))
 #define PYRO_FIRE1_Pin (1U<<9)
 #define PYRO_FIRE2_Pin (1U<<10)

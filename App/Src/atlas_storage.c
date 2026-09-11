@@ -281,6 +281,12 @@ static void storage_task(void *argument)
         }
         (void)AtlasStorage_FatTime();
         health.card_detected = BSP_SD_IsDetected() == SD_PRESENT;
+        BSP_SD_Diagnostics diagnostics;
+        BSP_SD_GetDiagnostics(&diagnostics);
+        health.failure_stage = diagnostics.stage;
+        health.hal_status = diagnostics.hal_status;
+        health.hal_error = diagnostics.hal_error;
+        health.detect_edges = diagnostics.detect_edges;
         health.stack_free_words = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
         taskENTER_CRITICAL();
         published_health = health;

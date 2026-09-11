@@ -29,6 +29,7 @@ void AtlasReview_SdReset(void);
 typedef struct
 {
     void *Instance;
+    uint32_t ErrorCode;
     struct { uint32_t ClockEdge, ClockPowerSave, BusWide, HardwareFlowControl, ClockDiv; } Init;
 } SD_HandleTypeDef;
 typedef struct { uint32_t LogBlockNbr, LogBlockSize; } HAL_SD_CardInfoTypeDef;

@@ -43,6 +43,7 @@ static AtlasUsbHealth test_usb;
 static AtlasStorageResult test_storage_result;
 static bool storage_result_ready;
 static unsigned submitted_storage, submitted_gpio;
+static AtlasIoCommand last_io_request;
 static unsigned dfu_resets;
 static unsigned dfu_stops;
 static unsigned tone_requests;
@@ -51,7 +52,7 @@ static AtlasStatus tone_result = ATLAS_OK;
 AtlasStatus AtlasBuzzer_Beep(AtlasBuzzer *buzzer, uint32_t hz, uint32_t ms)
 {
     assert(hz >= ATLAS_BUZZER_MIN_FREQUENCY_HZ && hz <= ATLAS_BUZZER_MAX_FREQUENCY_HZ);
-    assert(ms > 0U && ms <= 650U);
+    assert(ms > 0U && ms <= 1000U);
     ++tone_requests;
     tone_duration = ms;
     buzzer->running = true; /* Model a partially started timer even on failure. */
@@ -63,6 +64,7 @@ void AtlasBuzzer_Stop(AtlasBuzzer *buzzer)
     buzzer->running = buzzer->timed = false;
 }
 void AtlasIo_EmergencyStop(void) { ++dfu_stops; }
+void AtlasIo_BenchServoStop(void) { test_io.pwm_enabled_mask = 0U; }
 void AtlasBoot_RequestDfu(void) { ++dfu_resets; }
 bool AtlasIo_GetSnapshot(AtlasIoSnapshot *snapshot)
 {
@@ -81,7 +83,8 @@ bool AtlasUsb_GetHealth(AtlasUsbHealth *health)
 }
 AtlasStatus AtlasIo_Submit(const AtlasIoCommand *command, uint32_t *ticket)
 {
-    assert(command->type == ATLAS_IO_BENCH_GPIO);
+    assert(command->type == ATLAS_IO_BENCH_GPIO || command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET);
+    last_io_request = *command;
     ++submitted_gpio;
     *ticket = 41U;
     return ATLAS_OK;
@@ -120,15 +123,42 @@ static void test_march(void)
     test_usb.configured = test_usb.dtr = true;
     watchdog_fault = 0U;
     uint32_t total = 0U;
-    assert(BENCH_MARCH_NOTES == 33U);
+    assert(BENCH_MARCH_NOTES == 42U);
     for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
     {
-        assert(bench_march[i].hz >= 1000U && bench_march[i].hz <= 10000U);
-        assert(bench_march[i].tone_ms > 0U && bench_march[i].tone_ms <= 650U);
-        assert(bench_march[i].gap_ms <= 150U);
+        assert(bench_march[i].hz >= 300U && bench_march[i].hz <= 10000U);
+        assert(bench_march[i].tone_ms > 0U && bench_march[i].tone_ms <= 1000U);
+        assert(bench_march[i].gap_ms <= 540U);
         total += bench_march[i].tone_ms + bench_march[i].gap_ms;
     }
-    assert(total == 11360U);
+    assert(total == 16500U);
+    assert(bench_march[0].hz == 392U && bench_march[3].hz == 311U && bench_march[4].hz == 466U);
+    uint32_t phrase_end=0U;
+    for(unsigned i=0U;i<18U;++i)
+    {
+        phrase_end+=bench_march[i].tone_ms+bench_march[i].gap_ms;
+        if(i==8U)assert(phrase_end==4000U);
+    }
+    assert(phrase_end==8000U);
+    /* Regression: two low Gs must return to high G before descending to F#. */
+    const uint16_t bridge_hz[]={784U,392U,392U,784U,740U,698U,659U,622U,659U,415U,554U,523U,494U,466U,440U,466U};
+    for(unsigned i=0U;i<sizeof(bridge_hz)/sizeof(bridge_hz[0]);++i)
+        assert(bench_march[18U+i].hz==bridge_hz[i]);
+    assert(bench_march[24].tone_ms+bench_march[24].gap_ms==125U);
+    assert(bench_march[25].tone_ms+bench_march[25].gap_ms==125U);
+    assert(bench_march[26].tone_ms==220U);
+    /* Regression: the accepted closing phrase starts at 13.25 s, including F#. */
+    const uint16_t ending_hz[] = {311U,370U,311U,466U,392U,311U,466U,392U};
+    const uint16_t ending_ms[] = {250U,500U,375U,125U,500U,375U,125U,1000U};
+    uint32_t ending_start = 0U;
+    for (unsigned i = 0U; i < 34U; ++i)
+        ending_start += bench_march[i].tone_ms + bench_march[i].gap_ms;
+    assert(ending_start == 13250U);
+    for (unsigned i = 0U; i < sizeof(ending_hz) / sizeof(ending_hz[0]); ++i)
+    {
+        assert(bench_march[34U+i].hz == ending_hz[i]);
+        assert(bench_march[34U+i].tone_ms + bench_march[34U+i].gap_ms == ending_ms[i]);
+    }
     /* Full timeline crosses HAL tick wrap, including every audible/rest boundary. */
     const uint32_t began = UINT32_MAX - 100U;
     test_tick = began;
@@ -148,16 +178,30 @@ static void test_march(void)
         assert(!board.buzzer.running);
         offset += bench_march[i].tone_ms + bench_march[i].gap_ms;
     }
-    assert(!melody_active && tone_requests == 33U);
+    test_tick = began + total;
+    bench_melody_service();
+    assert(!melody_active && tone_requests == 42U);
     test_tick += 50000U;
     bench_melody_service();
-    assert(tone_requests == 33U); /* No looping/replay after completion. */
+    assert(tone_requests == 42U); /* No looping/replay after completion. */
+
+    /* Irregular service cannot accumulate tempo drift or drop a short note. */
+    const unsigned before_jitter=tone_requests;
+    assert(bench_melody_start()==ATLAS_OK);
+    const uint32_t jitter_start=test_tick;
+    const uint32_t steps[]={2U,3U,5U,7U,11U,17U,3U};
+    for(unsigned step=0U;(uint32_t)(test_tick-jitter_start)<total;++step)
+    {
+        test_tick+=steps[step%(sizeof(steps)/sizeof(steps[0]))];
+        bench_melody_service();
+    }
+    assert(!melody_active && tone_requests==before_jitter+42U);
 
     assert(bench_melody_start() == ATLAS_OK);
     const unsigned before = tone_requests;
-    test_tick += 900U; /* Skip the second note; shorten the third to its remaining time. */
+    test_tick += 1100U; /* Skip the second note; shorten the third to its remaining time. */
     bench_melody_service();
-    assert(tone_requests == before + 1U && melody_slot == 4U && tone_duration == 300U);
+    assert(tone_requests == before + 1U && melody_slot == 4U && tone_duration == 360U);
     test_tick += total;
     bench_melody_service();
     assert(!melody_active && !board.buzzer.running && tone_requests == before + 1U);
@@ -180,6 +224,18 @@ static void test_march(void)
     bench_melody_service();
     assert(!melody_active && !board.buzzer.running);
     watchdog_fault = 0U;
+    /* Startup is one-shot without DTR, but faults and explicit stop still win. */
+    test_usb.configured = test_usb.dtr = false;
+    bench_startup_start();
+    assert(melody_active && melody_startup && melody_track == 1U);
+    ++link_epoch;
+    test_tick += 120U;
+    bench_melody_service();
+    assert(melody_active && board.buzzer.frequency_hz == 1319U);
+    test_tick += 1000U;
+    bench_melody_service();
+    assert(!melody_active && !board.buzzer.running);
+    test_usb.configured = test_usb.dtr = true;
     tone_result = ATLAS_ERROR_IO;
     assert(bench_melody_start() == ATLAS_ERROR_IO);
     assert(!melody_active && !board.buzzer.running);
@@ -329,5 +385,20 @@ int main(void)
     bench_dfu_service(&test_usb, true);
     assert(!dfu_pending && dfu_resets == 1U); /* Finite deadline. */
     test_march();
+    pending=BENCH_PENDING_NONE;reply_count=0U;watchdog_fault=0U;
+    assert(AtlasBench_Parse("106 servo enable 8 1320 1720", &command));
+    bench_dispatch(&command);
+#if ATLAS_SERVO_BENCH
+    assert(pending==BENCH_PENDING_GPIO && last_io_request.type==ATLAS_IO_BENCH_SERVO_ENABLE);
+    assert(last_io_request.arguments.servo.channel==7U && last_io_request.arguments.servo.minimum_us==1320U && last_io_request.arguments.servo.maximum_us==1720U);
+    pending=BENCH_PENDING_NONE;
+    assert(AtlasBench_Parse("107 servo set 8 1600", &command));bench_dispatch(&command);
+    assert(pending==BENCH_PENDING_GPIO && last_io_request.type==ATLAS_IO_BENCH_SERVO_SET && last_io_request.arguments.pwm.pulse_us==1600U);
+    pending=BENCH_PENDING_SD;watchdog_fault=1U;test_io.pwm_enabled_mask=128U;
+    assert(AtlasBench_Parse("108 servo stop", &command));bench_dispatch(&command);
+    assert(test_io.pwm_enabled_mask==0U && pending==BENCH_PENDING_SD); /* OFF bypasses busy/fault without losing the old operation. */
+#else
+    assert(pending==BENCH_PENDING_NONE && reply_ring[reply_head].status==ATLAS_ERROR_UNSUPPORTED);
+#endif
     return 0;
 }

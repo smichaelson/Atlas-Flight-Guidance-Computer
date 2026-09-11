@@ -23,7 +23,7 @@ extern "C" {
 #endif
 
 #define ATLAS_BUZZER_RESONANT_FREQUENCY_HZ (4800U)
-#define ATLAS_BUZZER_MIN_FREQUENCY_HZ      (1000U)
+#define ATLAS_BUZZER_MIN_FREQUENCY_HZ      (300U)
 #define ATLAS_BUZZER_MAX_FREQUENCY_HZ      (10000U)
 
 /** @brief Buzzer driver state. */
@@ -49,7 +49,7 @@ AtlasStatus AtlasBuzzer_Init(AtlasBuzzer *buzzer, TIM_HandleTypeDef *timer);
 /**
  * @brief Start a continuous differential square wave.
  * @param buzzer Initialized buzzer instance.
- * @param frequency_hz Frequency from 1000 through 10000 Hz; 4800 Hz is resonant.
+ * @param frequency_hz Frequency from 300 through 10000 Hz; 4800 Hz is resonant.
  * @return ATLAS_OK or a typed argument/timer failure.
  */
 AtlasStatus AtlasBuzzer_Start(AtlasBuzzer *buzzer, uint32_t frequency_hz);
@@ -57,7 +57,7 @@ AtlasStatus AtlasBuzzer_Start(AtlasBuzzer *buzzer, uint32_t frequency_hz);
 /**
  * @brief Start a tone that stops automatically when serviced after its duration.
  * @param buzzer Initialized buzzer instance.
- * @param frequency_hz Frequency from 1000 through 10000 Hz.
+ * @param frequency_hz Frequency from 300 through 10000 Hz.
  * @param duration_ms Nonzero duration shorter than 2^31 milliseconds.
  * @return ATLAS_OK or a typed argument/timer failure.
  */

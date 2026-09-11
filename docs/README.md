@@ -6,6 +6,7 @@
 |---|---|
 | Power up the new PCB, program over USB and run the dashboard/tests | **[startup](startup.md)** — one complete bench procedure |
 | Use the new browser dashboard and later USB updates | [Ground Station](GROUND_STATION.md), with [three-pass evidence](GROUND_STATION_REVIEW.md) |
+| Test one free KST X10 servo with measured supply margin | [Servo bench workbench](SERVO_BENCH.md) |
 | Understand the project and run its first checks | [Quick start](QUICK_START.md) |
 | Know whether a subsystem is usable and how to accept it | [Systems and readiness](SYSTEMS.md) |
 | Use SD, USB, ADC, GPIO, PWM, pyro, expansion or commissioning APIs | [Peripheral services](PERIPHERALS.md) |

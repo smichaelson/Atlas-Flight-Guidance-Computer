@@ -60,18 +60,19 @@ def verify(manifest_path: Path) -> dict:
     """
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (not isinstance(manifest, dict) or type(manifest.get("schema")) is not int or
-            manifest.get("schema") != 1 or manifest.get("profile") != "bringup" or
+            manifest.get("schema") != 1 or manifest.get("profile") not in ("bringup", "servo_bench") or
             manifest.get("target") != "STM32H743ZIT6" or manifest.get("flash_base") != "0x08000000" or
             manifest.get("build_type") not in ("Debug", "Release", "RelWithDebInfo", "MinSizeRel")):
         raise ValueError("Not the reviewed Atlas bring-up target/profile/address")
     files = {}
-    for kind, expected in (("binary", "Atlas-Bringup.bin"), ("hex", "Atlas-Bringup.hex")):
+    basename = "Atlas-ServoBench" if manifest["profile"] == "servo_bench" else "Atlas-Bringup"
+    for kind, expected in (("binary", basename + ".bin"), ("hex", basename + ".hex")):
         if manifest.get(kind) != expected:
             raise ValueError("Unexpected artifact name")
         files[kind] = (manifest_path.parent / expected).read_bytes()
         if hashlib.sha256(files[kind]).hexdigest() != manifest.get(kind + "_sha256"):
             raise ValueError(kind + " hash mismatch; rebuild before programming")
-    elf = (manifest_path.parent / "Atlas-Bringup.elf").read_bytes()
+    elf = (manifest_path.parent / (basename + ".elf")).read_bytes()
     if not elf.startswith(b"\x7fELF") or hashlib.sha256(elf).hexdigest() != manifest.get("elf_sha256"):
         raise ValueError("ELF hash/format mismatch")
     binary = files["binary"]
@@ -88,7 +89,7 @@ def verify(manifest_path: Path) -> dict:
             raise ValueError("HEX and binary content disagree")
     if any(FLASH_BASE + i not in data for i in range(8)):
         raise ValueError("Incomplete HEX vector table")
-    return dict(verified_offline=True, profile="bringup", target=manifest["target"],
+    return dict(verified_offline=True, profile=manifest["profile"], target=manifest["target"],
                 build_type=manifest["build_type"], program_file=str((manifest_path.parent / manifest["hex"]).resolve()),
                 flash_base=manifest["flash_base"], binary_bytes=len(binary),
                 hex_sha256=manifest["hex_sha256"], initial_sp=hex(stack), reset_vector=hex(reset),

@@ -1,5 +1,7 @@
 """Open one local Ground Station using the existing Python environment."""
 import argparse
+import hashlib
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -27,10 +29,16 @@ def main():
     url=f"http://127.0.0.1:{args.port}/"
     try:
         with urllib.request.urlopen(url,timeout=2) as response:
-            existing=b'<meta name="atlas-token"' in response.read(200000)
+            page=response.read(200000)
+            existing=b'<meta name="atlas-token"' in page
     except (OSError,urllib.error.URLError):
         existing=False
     if existing:
+        root_id=hashlib.sha256(str(ROOT).casefold().encode('utf-8')).hexdigest()[:24]
+        match=re.search(rb'name="atlas-root-id" content="([a-f0-9]+)"',page)
+        if not match or match.group(1).decode()!=root_id:
+            raise SystemExit('A different or older Atlas server is using this port. Close its launcher, '
+                             'or run Start Atlas Dashboard.cmd --port 8766 from this clone.')
         print("Atlas is already running. Opening its current session; use Explore demo if needed.")
         webbrowser.open(url)
         return

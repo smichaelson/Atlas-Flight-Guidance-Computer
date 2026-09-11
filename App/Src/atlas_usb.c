@@ -13,6 +13,7 @@
  * USB OTG internal DMA remains OFF: DTCM buffers are CPU/FIFO accessed.
  */
 #include "atlas_usb.h"
+#include "atlas_build.h"
 #include "main.h"
 #include "usb_device.h"
 #include "usbd_core.h"
@@ -25,6 +26,8 @@
 #define USB_STACK_WORDS (1024U)
 #define USB_TX_QUEUE_LENGTH (4U)
 #define USB_TX_TIMEOUT_MS (2000U)
+/* Faster bounded service avoids hundreds of milliseconds of drag/reply lag. */
+#define USB_PERIOD_MS (ATLAS_SERVO_BENCH ? 1U : 5U)
 typedef struct { uint32_t session; uint16_t length; uint8_t data[64]; } UsbPacket;
 static QueueHandle_t tx_queue;
 static StaticQueue_t queue_control;
@@ -198,7 +201,7 @@ static void usb_task(void *argument)
         mask = usb_lock();
         health.stack_free_words = stack_free;
         usb_unlock(mask);
-        vTaskDelay(pdMS_TO_TICKS(5U) != 0U ? pdMS_TO_TICKS(5U) : 1U);
+        vTaskDelay(pdMS_TO_TICKS(USB_PERIOD_MS) != 0U ? pdMS_TO_TICKS(USB_PERIOD_MS) : 1U);
     }
 }
 

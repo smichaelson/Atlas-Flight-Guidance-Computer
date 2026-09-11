@@ -19,6 +19,17 @@ from protocol import Decoder, Session
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "build/Bringup/Atlas-Bringup.manifest.json"
 
+def find_manifest(profile='bringup') -> Path:
+    """Resolve known build locations within THIS clone, never another user's path."""
+    if profile not in ('bringup','servo_bench'):
+        raise ValueError('Choose Bringup or ServoBench')
+    basename='Atlas-ServoBench' if profile=='servo_bench' else 'Atlas-Bringup'
+    folders=('ServoBenchMake','ServoBench') if profile=='servo_bench' else ('BenchMake','Bringup','BringupRelease')
+    for folder in folders:
+        candidate=ROOT/'build'/folder/(basename+'.manifest.json')
+        if candidate.is_file(): return candidate
+    raise ValueError('Build this profile first using '+('Build Atlas ServoBench.cmd' if profile=='servo_bench' else 'Build Atlas Firmware.cmd'))
+
 
 def programmer_path() -> Path:
     """Find an installed ST tool without downloading or changing drivers."""
@@ -60,9 +71,11 @@ def prepare(manifest: Path) -> tuple[dict, Path]:
     staging_root = ROOT / "build/update-staging"
     staging_root.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(prefix="image-", dir=staging_root))
-    for name in ("Atlas-Bringup.manifest.json", "Atlas-Bringup.elf", "Atlas-Bringup.bin", "Atlas-Bringup.hex"):
-        shutil.copyfile(manifest if name.endswith("manifest.json") else manifest.parent / name, folder / name)
-    frozen = folder / "Atlas-Bringup.manifest.json"
+    basename = "Atlas-ServoBench" if evidence["profile"] == "servo_bench" else "Atlas-Bringup"
+    for suffix in (".manifest.json", ".elf", ".bin", ".hex"):
+        name = basename + suffix
+        shutil.copyfile(manifest if suffix == ".manifest.json" else manifest.parent / name, folder / name)
+    frozen = folder / (basename + ".manifest.json")
     result = verify(frozen)
     if result["hex_sha256"] != evidence["hex_sha256"]:
         raise ValueError("Image changed during preparation; recheck before updating.")
@@ -86,7 +99,7 @@ def enter_dfu(port: str, uid: list[int], report=print) -> None:
         while not (session.hello and session.fresh(time.monotonic())):
             if time.monotonic() > deadline:
                 raise TimeoutError("No fresh Atlas bring-up handshake; initial installation needs factory DFU.")
-            for frame in decoder.feed(device.read(8192)):
+            for frame in decoder.feed(device.read(min(8192, device.in_waiting or 1))):
                 session.accept(frame, time.monotonic())
             if decoder.errors:
                 raise ValueError("Malformed telemetry during update handshake; request refused.")
@@ -101,7 +114,10 @@ def enter_dfu(port: str, uid: list[int], report=print) -> None:
         accepted = False
         while time.monotonic() < deadline:
             try:
-                data = device.read(8192)
+                # A Windows overlapped read waiting for 8192 bytes can lose an
+                # already queued short ACK when the MCU resets before timeout.
+                # Drain available bytes immediately; wait for only one if empty.
+                data = device.read(min(8192, device.in_waiting or 1))
             except serial.SerialException:
                 if accepted:
                     return
@@ -112,6 +128,8 @@ def enter_dfu(port: str, uid: list[int], report=print) -> None:
                     if session.last_reply["status"]:
                         raise ValueError(session.last_reply["detail"])
                     accepted = True
+            if decoder.errors or session.blocked:
+                raise ValueError('Invalid telemetry during DFU acknowledgement; no programming attempted.')
             # Remain open after ACK: DTR loss before reset cancels firmware entry.
         if not accepted:
             raise TimeoutError("DFU request was not acknowledged; no programming attempted.")
@@ -128,7 +146,7 @@ def program(manifest: Path, uid: list[int], dfu_port: str = "USB1", report=print
     deadline = time.monotonic() + 25
     while True:
         output = run_cli(cli, ["-l", "usb"])
-        ports = re.findall(r"(?im)USB Port\s*:\s*(USB\d+)", output)
+        ports = re.findall(r"(?im)^\s*(?:USB Port|Device Index)\s*:\s*(USB\d+)\s*$", output)
         if ports:
             if ports != [dfu_port]:
                 raise ValueError("DFU selection is ambiguous or changed; disconnect other STM32 DFU devices.")

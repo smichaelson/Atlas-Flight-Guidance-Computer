@@ -1,95 +1,98 @@
 # Atlas Ground Station and USB updates
 
-Version 1.1.0 adds a local browser dashboard and a guarded request to enter the STM32H743 factory USB bootloader. The board runs from its battery; USB-C carries data to the laptop. Keep motors, servos and pyro loads disconnected and J5 open. The existing board, power and USB inspection requirements in [startup](startup.md) still apply, including the present 16.3 V input limit and mandatory RGB inhibit.
+Version 1.2.5 applies each selected servo angle directly, using the servo’s own position controller. The dashboard offers angle buttons and numeric entry across nominal ±50°. It retains the corrected PCB PWM numbering (right 1 to left 8), 16-sample ADC averaging and 8.55 V output-loop cutoff. See the [servo review](SERVO_FIX_REVIEW.md). Version 1.2.2 added the owner-selected 8.55 V ServoBench cutoff and repairs the march transition. It retains the 1.2.1 work that corrects the ADC reference scaling, exposes SW2 and SD diagnostics, adds startup audio, and provides a separate ServoBench image for manual KST X10 tests. Atlas uses battery power; USB-C carries data. Follow the board inspection and power requirements in [startup](startup.md), including the 16.3 V input limit and mandatory RGB inhibit. Keep J5 open and pyro loads disconnected. Servos stay disconnected until the [servo bench procedure](SERVO_BENCH.md) is satisfied.
 
 ## Start the dashboard
 
-Double-click **Start Atlas Dashboard.cmd** in the repository. It uses the project's existing Python virtual environment and opens `http://127.0.0.1:8765`. Keep the launcher running while using the dashboard. **Atlas Dashboard Demo.cmd** opens moving, explicitly simulated instruments with serial access disabled.
+Double-click **Start Atlas Dashboard.cmd in your local clone**. It opens [Atlas Ground Station](http://127.0.0.1:8765). Keep the launcher running. **Atlas Dashboard Demo.cmd** opens explicitly simulated instruments and servo models with hardware actions disabled.
 
-If a dashboard is already running, either launcher opens that existing session. Use **Explore demo** from its disconnected state to enter simulation.
+On a fresh Windows laptop, install Python 3.10 or newer with its Python launcher first. The Atlas launcher creates this clone's `.venv` and installs the bundled, SHA-256-verified pyserial wheel without network access. Do not copy another computer's `.venv`, browser shortcut, or absolute path. No Node packages, accounts, map service, or compiler are required for the dashboard. A failed setup leaves the error visible and details in `.atlas-launch.log`; an unusable environment is preserved under a timestamped name.
 
-The same launch can be run from the repository root:
+Launch paths are resolved from the batch file and Python source, regardless of the working directory. Repository documentation links are relative. `127.0.0.1` always refers to the computer running that copy of the dashboard; it does not connect to another laptop's server.
 
-```powershell
-.\.venv\Scripts\python.exe tools/bringup/launch_ground_station.py
-# Offline demonstration:
-.\.venv\Scripts\python.exe tools/bringup/launch_ground_station.py --demo
-```
-
-If creating a fresh checkout, install Python 3.10+ and the existing pinned requirement first:
+If the same clone already owns the port, the launcher opens its existing session. A different clone or older server on that port produces a clear message; close its launcher or run:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r tools/bringup/requirements.txt
+& '.\Start Atlas Dashboard.cmd' --port 8766
 ```
 
-No Node packages, internet connection, accounts, hosted service or external map tiles are needed to use the dashboard. The original [Tk dashboard](../tools/bringup/dashboard.py) remains available.
+For a setup/path check that does not open a server, browser, serial port or firmware operation:
+
+```powershell
+& '.\Start Atlas Dashboard.cmd' --check
+& '.\Atlas Dashboard Demo.cmd' --check
+```
+
+The original [Tk dashboard](../tools/bringup/dashboard.py) remains available for ordinary Bringup diagnostics; the browser dashboard owns the ServoBench workflow.
 
 ## Connect and observe
 
-1. Start with checked battery power and the documented safe physical setup, then attach USB-C.
-2. Exit demo if running. Choose **Connect device**, refresh ports, explicitly select Atlas's COM port and confirm the bench setup. A COM port is not proof of the correct firmware: the application waits for the inhibited Bringup handshake and valid status frames.
-3. Choose **Start sensors** to probe each previously untested onboard sensor, including GNSS, once. BLE/radio and fixture tests are separate deliberate actions. There is no automatic sensor probe on connection and no automatic retry.
-4. Use **Overview** for attitude, motion/pressure histories, rail input, GNSS altitude and subsystem health. **Sensors** shows all 14 existing observation rows, ten ADC ranks and failure details. **Navigation** shows valid 3D fixes, local ground track, accuracy, NAV/UART counters and PPS. The instrument orientation follows the supplied BNO quaternion; body-axis mounting/calibration remains unqualified.
-5. **Communications** displays USB, NINA-B112 BLE and RFD900x observations. The legacy J9 “LoRa” connector is a serial FHSS radio interface. Firmware does not expose RSSI/SNR or prove peer delivery, so these are never fabricated.
-6. **Test controls** contains the existing allowlisted probes, read-only media operations and explicitly confirmed indicator/fixture/link tests. RGB, PWM and pyro enable/fire controls remain absent. A pending or uncertain command blocks new work.
-7. **Session log** records only after **Start recording**. Stop and export JSONL to keep evidence. Every frame includes its host UTC and `source` (`live` or `demo`). The 12,000-record cap stops recording before overwriting old evidence. Export and explicitly clear the previous capture before recording again. Closing the server discards unsaved in-memory evidence.
+1. Apply checked battery power and attach USB-C. Exit demo, choose **Connect device**, refresh ports, and select the STMicroelectronics Virtual COM Port. A COM number alone does not identify Atlas: the host validates the firmware profile, capabilities, UID and status frames.
+2. **Overview** shows live attitude, histories, voltage, SW2 HIGH/LOW and SD detection/mount state. Switch LOW/HIGH describes PF12 electrically; no mechanical ON/OFF orientation is assumed.
+3. **Start sensors** deliberately probes previously untested onboard sensors and GNSS once. BLE/radio and fixture tests are separate actions. An absent GNSS antenna means a valid navigation fix is not expected; an absent BLE module is not an installed sensor failure.
+4. **Sensors** includes the ten ADC ranks and retained reference diagnostics. A healthy reference uses the H743's 16-bit factory and live values without the erroneous 12-bit conversion. Compare 3V3/PWM/5V/VIN against a meter; ADC readings are not a replacement for electrical qualification.
+5. **Navigation** requires a valid fix for position and ground track. **Communications** shows USB, NINA BLE and RFD900x observations. J9's legacy “LoRa” label refers to a serial FHSS radio interface; RSSI, SNR and peer delivery are not fabricated.
+6. **Test controls** contains explicit sensor, indicator, GPIO and media commands. **Servo workbench** contains the separate manual PWM procedure. RGB and pyro activation remain unavailable.
+7. **Session log** records only after **Start recording**. Stop and export JSONL before closing the server. Records identify host UTC and live/demo source. The 12,000-record cap stops instead of overwriting old evidence.
 
-Numbers with invalid/stale sample state are suppressed in the main instruments. Retained sensor-table values are labelled as last observations when the connection is stale. GNSS coordinates require a valid fix; a responding receiver alone is insufficient. Histories are bounded to 240 status frames (about 120 seconds at the firmware's 2 Hz publication rate). Status cadence is not the underlying sensor sampling rate.
+Invalid or stale measurements are suppressed in instruments; retained observations are labelled. Histories hold 240 frames, about 120 seconds at 2 Hz. MCU status publication rate is not sensor sample rate. Model horn positions are commands/previews, never physical position feedback.
 
 ### If connection fails
 
-The September 8 dashboard correction fixes a Windows startup race that could show **Expecting value: line 1 column 1 (char 0)** immediately after opening the correct COM port. The dashboard now opens with DTR low, lets the old session settle for 100 ms, clears buffered input, then raises DTR to request a fresh handshake. This is a laptop-side correction; an already installed Bringup 1.1.1 image does not need another upload for it.
+Close an old server window before relaunching updated Python files; refreshing the browser alone does not replace the server. Select Atlas's USB COM device, not the PC's generic Communications Port. COM numbers can change between computers and after programming. ROM DFU has no application COM port.
 
-After updating the Python files, stop the old dashboard server window and run **Start Atlas Dashboard.cmd** again, then refresh the browser. Refreshing only the browser keeps the old Python process running. Select the **STMicroelectronics Virtual COM Port** (COM3 in the September 8 bench check); the PC's generic **Communications Port (COM1)** is not Atlas. Port numbers can change.
+The host opens with DTR low, waits 100 ms, clears old input, then raises DTR for a new handshake. This corrects the previous Windows startup race behind `Expecting value: line 1 column 1`. Missing handshakes time out clearly after eight seconds. Malformed telemetry still blocks hardware commands and retains an escaped, bounded rejected-record preview.
 
-A missing or incomplete handshake now produces a clear error after eight seconds. Malformed telemetry still blocks commands; the session log includes an escaped, bounded preview of the rejected record. Check battery power, USB-C, the selected port, and the running Bringup profile before reconnecting. ROM DFU does not appear as an application COM port.
+### SD card checks
 
-The September 8 physical connection check identified Bringup 1.1.1 and received 24 real status records in 12 seconds without decoder errors. It also reported an ADC reference fault (`power.ref_stage=8`, computed VDDA range), so voltage readings were invalid. Successful USB communication does not qualify the individual sensors or power measurements.
+Detection and mounting are separate. In **Test controls**, mount the card first, then read the prepared `ATLAS.TXT`. A missing read-test file is a filesystem error, not proof that the SD slot is broken. The dashboard displays named FatFs errors, controller failure stage, HAL status/error and detect-edge count.
+
+The optional write/read comparison creates a 1,024-byte `ATLASCHK.TST` exclusively and checks its contents. It refuses to overwrite an existing file. It does not format the card. Unmount before removing media; power Atlas off before moving the card to a PC. Safely eject on the PC before returning it to Atlas. The September 11 card check mounted and read `ATLAS.TXT` successfully with the previous 1.1.1 firmware; no SD clock or bus-width change was needed for that result.
 
 ## Play the buzzer melody
 
-With **Bringup 1.1.1 or later** installed and a confirmed live connection, open **Test controls → Indicators & logic → ♪ Imperial March**. The 33-note arrangement uses the owner's supplied pitch sequence, with simple timing and selected octaves inside the existing 1–10 kHz driver limits. It lasts about 11.36 seconds and plays once. The dashboard displays the current note or rest from MCU telemetry.
+Startup plays four rising notes once after the buzzer owner starts, even without a dashboard connection. This is a power-on sound, not a flight-readiness annunciation.
 
-**Stop indicators** cancels it. USB/DTR loss, a changed session or a watchdog fault also cancels at the next owner service. Another sensor/link owner command stops it before starting that operation. Sensor polling continues during playback; late service skips elapsed notes instead of replaying them. Firmware-update entry is refused while the melody is active. Existing firmware and demo mode keep the button disabled. Driver success does not verify actual sound; acoustic/timing testing on the PCB is still pending.
+**Test controls → Indicators & logic → Imperial March** plays a single 42-note arrangement, 16.5 seconds. Version 1.2.2 restores the high-G repeat and short E–E♭–E turn in the bridge beginning at note 19, corrects the later B♭ landing, and places both opening phrases on four-second boundaries at 120 beats/minute. The closing phrase starts at 13.25 seconds with E♭–F♯–E♭–B♭ before returning to G; this is the owner's accepted Preview C. The owner's preferred lower octave is retained: 311–784 Hz, with a 300 Hz driver minimum. This remains an adaptation of the owner's supplied rough phrases. Timer reload and compares latch together before each tone starts. Firmware 1.1.1 reports its older 33-note/11.36-second sequence.
+
+**Stop indicators** cancels the melody. USB/DTR loss, a changed session, fault or a new sensor/link command cancels it; there is no replay queue. Polling continues while it plays and late service skips elapsed notes. Firmware update is refused during audio. Status shows MCU playback progress; actual pitch, loudness and differential waveform still require acoustic/scope acceptance.
 
 ## Build and first installation
 
-Double-click **Build Atlas Firmware.cmd**, or run:
+| Root launcher | Output | Capability |
+|---|---|---|
+| **Build Atlas Firmware.cmd** | `build/BenchMake/Atlas-Bringup.hex` and matching manifest | Diagnostics with PWM/pyro inhibited |
+| **Build Atlas ServoBench.cmd** | `build/ServoBenchMake/Atlas-ServoBench.hex` and matching manifest | Diagnostics plus explicitly gated, one-channel manual servo PWM; pyro inhibited |
 
-```powershell
-.\.venv\Scripts\python.exe tools/bringup/build_firmware.py
-```
+Builders need the Arm GNU compiler, CMake and GNU Make in addition to Python. They discover installed tool locations and report missing tools; they do not program hardware. Both emit ELF/HEX/BIN/manifest and validate target, vectors, hash and image agreement. The CMake Bringup/ServoBench presets are also available when using Ninja. Normal Debug/Release firmware is not accepted by this dashboard updater.
 
-The Windows helper uses the installed Arm GNU compiler, CMake and GNU Make. It produces and verifies `build/BenchMake/Atlas-Bringup.elf`, `.hex`, `.bin` and `.manifest.json`; it never opens a serial port or programs hardware. The launch helper selects that manifest when present. The existing Ninja Bringup presets remain supported separately; select their manifest explicitly if using another build directory.
+The launchers use Python directly, so PowerShell script-execution policy does not need to change. On a clone with no build artifacts, the dashboard still opens and connects; build a profile before verifying a new image. Select an explicit manifest for a custom build folder. Relative manifest paths resolve inside this clone.
 
-The double-click launchers use Python directly, so Windows PowerShell's script-execution policy does not need to change. The `.ps1` helpers remain optional for environments where those scripts are permitted.
-
-An older image does not contain the new request handler. **One initial installation via BOOT0/NRST and factory DFU, or via SWD, is required.** Follow [the original initial-programming procedure](startup.md#4-program-the-stm32-over-usb-dfu), select the newly verified 1.1.1 or later Bringup image, preserve existing flash if needed, and retain verification evidence. Use a cold power cycle for this first installation. No software can make an already running older image respond to a command it does not implement.
+An image older than 1.1.0 needs **one initial BOOT0/NRST DFU or SWD installation**. Follow [initial programming](startup.md#4-program-the-stm32-over-usb-dfu), verify the exact image, and cold-cycle power. An old application cannot implement a new command until it is replaced.
 
 ## Later updates without BOOT0/NRST
 
-With Bringup 1.1.0 or later running, BOOT0 left in its normal LOW state, and battery/USB-C connected:
+With Bringup/ServoBench software-DFU support installed, BOOT0 remains LOW:
 
-1. Finish all tests and unmount the card. All GPIO pulses must have expired. Keep physical loads isolated.
-2. Build the new Bringup image. In **Firmware**, choose **Verify image**. An explicit manifest path can select a different build. The tool validates hashes, target, profile, vectors and the complete HEX address range, and stages a frozen copy.
-3. Choose **Update Atlas** and review the specific image/update action. The serial owner performs a fresh handshake and sends one UID-bound `bootloader` command. Firmware requires idle services, deasserted outputs and unmounted media. It waits for the acknowledgement's USB transfer completion, then uses a one-shot RAM marker and software reset to enter factory ROM before HAL/MPU/cache/RTOS setup.
-4. The laptop waits for a single DFU device. Every programmer connection is pinned to that device's DFU serial. It reads the physical 96-bit UID and chip-family ID and compares them with the CDC handshake before any write. A wrong or ambiguous target aborts.
-5. CubeProgrammer downloads the bank-1-only HEX with verification. No mass erase, option-byte operation, readout-unprotect or arbitrary memory-write command is issued. If verification fails, it does not start the application or automatically retry.
-6. For ROM 0x91/0x92, the updater requests application start. Other or unreadable ROM versions finish with an explicit **battery power cycle required** result, preserving the older-ROM power-configuration restriction. Reconnect to verify the new firmware identity and streaming; flash verification alone is not proof that the application restarted.
+1. Stop PWM and indicators, finish commands, and unmount SD. Keep loads isolated and battery/USB stable.
+2. Build the desired profile. In **Firmware**, select **Bringup** or **ServoBench**, then **Verify image**. This freezes a validated bank-1-only image. An explicit manifest takes precedence over the selected profile; review the displayed profile and hash.
+3. Choose **Update Atlas** and review the concrete image. The serial owner rechecks identity and idle state, then sends one UID-bound bootloader request. Firmware waits for acknowledgement transfer completion and uses a one-shot marker/software reset to enter factory ROM before HAL/RTOS setup.
+4. The host requires a single DFU target, pins every programmer command to its DFU serial, and compares physical UID/family with the application handshake before writing. A wrong or ambiguous target aborts.
+5. CubeProgrammer downloads and verifies the bounded HEX. The updater performs no mass erase, option-byte change or readout-unprotect. A failed verify does not run or retry the image automatically.
+6. ROM 0x91/0x92 permits the application-start request. Other or unreadable ROM versions require a cold power cycle, which the UI reports explicitly. Even a supported ROM may need a cold restart: if the flash verifies but the application COM port does not return, disconnect both USB-C and battery, leave BOOT0 LOW, then restore battery power and USB-C. Reconnect and verify the new profile/version and live data. Do not repeat a verified flash just because the restart did not complete.
 
-Keep battery power and USB stable during the write. A broken application, interrupted update, unavailable USB driver or unsupported ROM behavior can require physical BOOT0/NRST or SWD recovery. Factory ROM owns its own pin configuration; application GPIO/LED inhibits do not describe the ROM interval. Keep the same physical isolation used for initial DFU programming.
+The September 11 test verified software-requested programming of 1.2.1 on this board. One ROM 0x92 update returned directly; the latest required the cold restart above. Automatic return is not yet reliably qualified.
 
-The supported automated workflow programs the **Bringup profile**. Normal Debug/Release builds retain the early reset hook, but expose no remote maintenance command parser; switching to an arbitrary normal/flight image removes this dashboard's update route. A flight maintenance interface needs a separate operational safety design.
+A broken application, interrupted update or USB driver problem can still require physical BOOT0/NRST or SWD recovery. Factory ROM owns its own pins during DFU; application output inhibits do not govern ROM. See the same isolation requirements as initial programming. Normal/flight builds have no maintenance command parser and remove the dashboard's update route.
 
 ## Engineering details and references
 
-The command is `ID bootloader UID0 UID1 UID2`, with three decimal 32-bit words from the current handshake. `hello.software_dfu=true` advertises support. Identity is an accidental-wrong-device guard, not authentication against a malicious USB host. Requests cannot arrive through BLE/radio. A 3-second USB drain deadline, dropped acknowledgement, lost session or newly busy/unsafe state cancels entry. Commands received while entry is pending are rejected.
+The wire command is `ID bootloader UID0 UID1 UID2`; `software_dfu:true` advertises support. UID matching prevents accidental wrong-device writes; it is not authentication. BLE/radio cannot send these commands. Entry cancels on an expired drain deadline, dropped acknowledgement, session loss or newly unsafe/busy state.
 
-The retained 8-byte `.atlas_boot` section is outside C initialization, in DTCM. A complementary marker and software-reset cause are required; cold/brownout boots never read uninitialized marker memory. The marker is cleared before attempting ROM entry. The main stack starts at the existing `0x2001C000`, with initial MSP `0x2001FFE0`; reserving the top 32 bytes addresses ST's documented ROM Go limit while preserving the `0x2001BF00` MPU guard. GNU and IAR layouts agree; actual IAR compilation remains unverified.
+An 8-byte `.atlas_boot` marker in DTCM requires a complementary value and software-reset cause. Cold boots never read uninitialized marker memory. The initial MSP is `0x2001FFE0`, reserving the ROM Go restriction's top 32 bytes; the existing stack/MPU guard remain. GNU and IAR layouts agree, but actual IAR compilation is unverified.
 
-The local server binds only to `127.0.0.1`, serves a fixed asset allowlist, checks Host/Origin, requires an unpredictable session token for API access, rejects cross-site requests and bounds request/capture/history sizes. Opening the page does not open COM ports. Its optional WebMCP tool only reads telemetry; it cannot issue hardware commands.
+The server binds to loopback, serves a fixed asset allowlist, checks Host/Origin, requires a random session token, and bounds requests/captures. Opening the page never opens a COM port. Optional WebMCP telemetry is read-only.
 
-- ST [AN2606, revision 70, H74xxx/75xxx tables 135–136](https://www.st.com/resource/en/application_note/an2606-introduction-to-system-memory-boot-mode-on-stm32-mcus-stmicroelectronics.pdf): ROM vectors, resources and version-specific restrictions.
-- ST [CubeProgrammer command reference](https://dev.st.com/stm32cube-docs/prog/2.23.0/en/docs/markup/CubeProg_Command_Lines.html): serial selection, memory reads, download/verify and application start; checked against the installed 2.23.0 CLI help.
-- [Ground Station review record](GROUND_STATION_REVIEW.md): three review passes, executable evidence and hardware acceptance status.
+- ST [AN2606](https://www.st.com/resource/en/application_note/an2606-introduction-to-system-memory-boot-mode-on-stm32-mcus-stmicroelectronics.pdf), H74xxx/75xxx bootloader resources and ROM-version restrictions.
+- ST [CubeProgrammer command reference](https://dev.st.com/stm32cube-docs/prog/2.23.0/en/docs/markup/CubeProg_Command_Lines.html), target selection, read, download/verify and Go.
+- [Servo bench procedure](SERVO_BENCH.md) and [review record](GROUND_STATION_REVIEW.md), including limitations of host tests and actual bench evidence.

@@ -51,7 +51,7 @@ static IoDmaBlock pyro_buffer __attribute__((section(".atlas_dma"), aligned(32))
 #error "Define and verify Atlas DMA placement for this compiler before enabling IO."
 #endif
 
-typedef struct { AtlasIoCommand command; uint32_t ticket, submitted_ms, epoch; } IoQueued;
+typedef struct { AtlasIoCommand command; uint32_t ticket, submitted_ms, epoch, usb_session, servo_cancel; } IoQueued;
 static AtlasIoHardware hw;
 static AtlasIoSnapshot working, published;
 static AtlasOutputConfiguration settings;
@@ -62,7 +62,10 @@ static uint8_t result_memory[ATLAS_IO_QUEUE_CAPACITY * sizeof(AtlasIoResult)];
 static StaticTask_t task_control;
 static StackType_t task_stack[IO_STACK_WORDS];
 static bool started, configured_locked, external_pending, internal_pending;
-static bool reference_valid, last_permitted, internal_temperature;
+static bool reference_valid, internal_temperature;
+#if !ATLAS_SERVO_BENCH
+static bool last_permitted;
+#endif
 static uint32_t external_started_ms, internal_started_ms, reference_started_ms;
 static uint32_t reference_vdda, next_ticket, output_epoch, adc_pulse_epoch;
 static uint8_t continuity_streak[ATLAS_PYRO_CHANNELS];
@@ -73,6 +76,10 @@ static volatile uint32_t pulse_epoch;
 #if ATLAS_BRINGUP
 static uint32_t bench_gpio_started_ms;
 static bool bench_gpio_active;
+#endif
+#if ATLAS_SERVO_BENCH
+static volatile uint32_t servo_cancel_epoch;
+static uint32_t servo_seen_cancel, servo_started_ms, servo_changed_ms, servo_usb_session;
 #endif
 static volatile uint32_t power_events, ecc_events, ecc_monitor_register, ecc_failing_word, ecc_error_code;
 static RAMECC_HandleTypeDef dtcm0_monitor;
@@ -107,15 +114,33 @@ static AtlasStatus io_gpio_command(uint8_t channel, bool high)
     else working.gpio_commanded_high &= (uint8_t)~(1U << channel);
     return ATLAS_OK;
 }
-/** @brief Select GPIO-low (disabled) or the generated timer AF for one PWM pin.
- * @param channel Zero-based channel. @param alternate True to use its timer output. */
+/* Public channels follow PCB labels: PWM 1 at the right, PWM 8 at the left.
+ * Generated Core names still identify schematic nets. Manufacturing placement
+ * and copper associate J19,J20,J21,J6,J15,J16,J17,J18 with old nets 7,8,1..6.
+ * Keep pin selection, compare writes and shutdown on this same routing table. */
+typedef struct { GPIO_TypeDef *port; uint8_t shift, bank, timer_channel; } IoPwmRoute;
+static const IoPwmRoute pwm_routes[ATLAS_IO_PWM_CHANNELS] = {
+    {GPIOB, 0U, 1U, TIM_CHANNEL_3}, /* PCB PWM 1, J19, PB0 */
+    {GPIOB, 2U, 1U, TIM_CHANNEL_4}, /* PCB PWM 2, J20, PB1 */
+    {GPIOE,18U, 0U, TIM_CHANNEL_1}, /* PCB PWM 3, J21, PE9 */
+    {GPIOE,22U, 0U, TIM_CHANNEL_2}, /* PCB PWM 4, J6, PE11 */
+    {GPIOE,26U, 0U, TIM_CHANNEL_3}, /* PCB PWM 5, J15, PE13 */
+    {GPIOE,28U, 0U, TIM_CHANNEL_4}, /* PCB PWM 6, J16, PE14 */
+    {GPIOC,12U, 1U, TIM_CHANNEL_1}, /* PCB PWM 7, J17, PC6 */
+    {GPIOC,14U, 1U, TIM_CHANNEL_2}  /* PCB PWM 8, J18, PC7 */
+};
+/** @brief Resolve the generated timer handle for a PCB channel.
+ * @param channel Zero-based PCB label. @return The TIM1 or TIM3 handle. */
+static TIM_HandleTypeDef *io_pwm_timer(uint32_t channel)
+{ return pwm_routes[channel].bank == 0U ? hw.pwm_1_to_4 : hw.pwm_5_to_8; }
+/** @brief Select GPIO-low or the generated timer AF for a PCB channel.
+ * @param channel Zero-based PCB label. @param alternate True to select timer AF. */
 static void io_pwm_pin(uint32_t channel, bool alternate)
 {
-    static GPIO_TypeDef *const ports[8] = {GPIOE,GPIOE,GPIOE,GPIOE,GPIOC,GPIOC,GPIOB,GPIOB};
-    static const uint8_t shifts[8] = {18U,22U,26U,28U,12U,14U,0U,2U};
-    const uint32_t shift = shifts[channel];
-    ports[channel]->BSRR = (1UL << (shift / 2U)) << 16;
-    MODIFY_REG(ports[channel]->MODER, 3UL << shift, (alternate ? 2UL : 1UL) << shift);
+    const IoPwmRoute *route = &pwm_routes[channel];
+    route->port->BSRR = (1UL << (route->shift / 2U)) << 16;
+    MODIFY_REG(route->port->MODER, 3UL << route->shift,
+               (alternate ? 2UL : 1UL) << route->shift);
 }
 /** @brief Non-recoverable electrical inhibition, independent of scheduler progress. */
 void AtlasIo_EmergencyStop(void)
@@ -363,7 +388,9 @@ static void io_reference(uint32_t now)
         internal_pending = false;
         if (!internal_temperature)
         {
-            reference_vdda = __HAL_ADC_CALC_VREFANALOG_VOLTAGE(raw, ADC_RESOLUTION_16B);
+            working.reference_vref_raw = raw;
+            reference_vdda = AtlasAnalog_VddaFromReference16(raw, *VREFINT_CAL_ADDR);
+            working.reference_computed_mv = reference_vdda;
             reference_valid = reference_vdda >= 2800U && reference_vdda <= 3600U;
             working.analog.reference_at_ms = internal_started_ms;
             if (!reference_valid)
@@ -494,11 +521,136 @@ static void io_pwm_disable(uint8_t bits)
         if ((bits & working.pwm_enabled_mask & (1U << i)) != 0U)
         {
             io_pwm_pin(i, false);
-            (void)HAL_TIM_PWM_Stop(i < 4U ? hw.pwm_1_to_4 : hw.pwm_5_to_8, (i % 4U) * 4U);
+            (void)HAL_TIM_PWM_Stop(io_pwm_timer(i), pwm_routes[i].timer_channel);
             working.commanded_pwm_us[i] = 0U;
         }
     working.pwm_enabled_mask &= (uint8_t)~bits;
+    if (working.pwm_enabled_mask == 0U) working.servo_target_us = 0U;
 }
+
+/** @brief Immediately deassert ServoBench PWM and fence accepted older commands. */
+void AtlasIo_BenchServoStop(void)
+{
+#if ATLAS_SERVO_BENCH
+    const uint32_t mask = io_lock();
+    ++servo_cancel_epoch;
+    if (hardware_ready)
+    {
+        CLEAR_BIT(TIM1->BDTR, TIM_BDTR_MOE);
+        TIM1->CCER = TIM3->CCER = 0U;
+        CLEAR_BIT(TIM1->CR1, TIM_CR1_CEN);
+        CLEAR_BIT(TIM3->CR1, TIM_CR1_CEN);
+        for (uint32_t i = 0; i < ATLAS_IO_PWM_CHANNELS; ++i) io_pwm_pin(i, false);
+    }
+    io_unlock(mask);
+#endif
+}
+
+#if ATLAS_SERVO_BENCH
+/** @brief Owner-selected PWM voltage ceiling, independent of flight permission.
+ * Other rails are diagnostic only in ServoBench. A zero, invalid or stale PWM
+ * sample cannot establish a powered supply below the ceiling. ADC/reference
+ * failures still latch the existing monitor fault; pyro remains inhibited.
+ * @param now Current tick. @return True with a usable, nonzero PWM reading. */
+static bool io_servo_rails(uint32_t now)
+{
+    return !emergency_latched && working.status == ATLAS_OK &&
+        io_rail(ATLAS_ANALOG_PWM_SUPPLY, now, 1U, ATLAS_IO_SERVO_MAX_MV);
+}
+
+/** @brief Cut PWM without depending on console progress or result-queue space.
+ * @param now Current tick; subtraction handles wraparound. */
+static void io_bench_servo_service(uint32_t now)
+{
+    AtlasUsbHealth usb = {0};
+    const bool online = AtlasUsb_GetHealth(&usb) && usb.configured && usb.dtr;
+    working.servo_ready = io_servo_rails(now) && online;
+    uint32_t reason = 0U;
+    if (servo_seen_cancel != servo_cancel_epoch) reason = 1U;
+    else if (working.pwm_enabled_mask != 0U)
+    {
+        if (emergency_latched || working.status != ATLAS_OK) reason = 5U;
+        else if (!online || usb.session != servo_usb_session) reason = 3U;
+        else if (!io_servo_rails(now)) reason = 4U;
+        else if ((uint32_t)(now - servo_changed_ms) >= ATLAS_IO_SERVO_IDLE_MS ||
+                 (uint32_t)(now - servo_started_ms) >= ATLAS_IO_SERVO_SESSION_MS) reason = 2U;
+    }
+    if (reason != 0U)
+    {
+        io_pwm_disable(UINT8_MAX);
+        working.servo_stop_reason = reason;
+        working.servo_stop_pwm_mv = working.analog.millivolts[ATLAS_ANALOG_PWM_SUPPLY];
+        ++output_epoch;
+        servo_seen_cancel = servo_cancel_epoch;
+    }
+    working.servo_remaining_ms = 0U;
+    if (working.pwm_enabled_mask != 0U)
+    {
+        const uint32_t idle = ATLAS_IO_SERVO_IDLE_MS - (uint32_t)(now - servo_changed_ms);
+        const uint32_t session = ATLAS_IO_SERVO_SESSION_MS - (uint32_t)(now - servo_started_ms);
+        working.servo_remaining_ms = idle < session ? idle : session;
+    }
+}
+
+/** @brief Execute one bounded servo enable or position request in the IO owner.
+ * @param queued Copied command, freshness and cancellation/session fences.
+ * @param now Current tick. @return Execution status, not measured horn position. */
+static AtlasStatus io_bench_servo_execute(const IoQueued *queued, uint32_t now)
+{
+    const AtlasIoCommand *command = &queued->command;
+    AtlasUsbHealth usb = {0};
+    if (queued->epoch != output_epoch || queued->servo_cancel != servo_cancel_epoch ||
+        (uint32_t)(now - queued->submitted_ms) > ATLAS_IO_COMMAND_MAX_AGE_MS ||
+        !io_servo_rails(now) || !AtlasUsb_GetHealth(&usb) || !usb.configured || !usb.dtr ||
+        queued->usb_session != usb.session) return ATLAS_ERROR_STATE;
+    const uint8_t channel = command->arguments.pwm.channel;
+    if (channel >= ATLAS_IO_PWM_CHANNELS) return ATLAS_ERROR_ARGUMENT;
+    TIM_HandleTypeDef *timer = io_pwm_timer(channel);
+    const uint32_t timer_channel = pwm_routes[channel].timer_channel;
+    if (command->type == ATLAS_IO_BENCH_SERVO_ENABLE)
+    {
+        const uint16_t minimum = command->arguments.servo.minimum_us;
+        const uint16_t maximum = command->arguments.servo.maximum_us;
+        if (minimum < 900U || maximum > 2100U || minimum >= 1520U || maximum <= 1520U)
+            return ATLAS_ERROR_ARGUMENT;
+        if (working.pwm_enabled_mask != 0U) return ATLAS_ERROR_BUSY;
+        __HAL_TIM_SET_COMPARE(timer, timer_channel, 1520U);
+        timer->Instance->CNT = 0U;
+        timer->Instance->EGR = TIM_EGR_UG; /* Latch compare before exposing the pin. */
+        io_pwm_pin(channel, true);
+        if (HAL_TIM_PWM_Start(timer, timer_channel) != HAL_OK)
+        { io_fail(ATLAS_ERROR_IO); return ATLAS_ERROR_IO; }
+        working.pwm_enabled_mask = (uint8_t)(1U << channel);
+        working.commanded_pwm_us[channel] = 1520U;
+        working.servo_minimum_us = minimum;
+        working.servo_maximum_us = maximum;
+        working.servo_stop_reason = working.servo_stop_pwm_mv = 0U;
+        working.servo_target_us = 1520U;
+        servo_started_ms = servo_changed_ms = now;
+        servo_usb_session = usb.session;
+        servo_seen_cancel = servo_cancel_epoch;
+    }
+    else
+    {
+        const uint16_t pulse = command->arguments.pwm.pulse_us;
+        if (working.pwm_enabled_mask != (uint8_t)(1U << channel) ||
+            usb.session != servo_usb_session ||
+            (uint32_t)(now - servo_changed_ms) >= ATLAS_IO_SERVO_IDLE_MS ||
+            (uint32_t)(now - servo_started_ms) >= ATLAS_IO_SERVO_SESSION_MS)
+            return ATLAS_ERROR_STATE;
+        if (pulse < working.servo_minimum_us || pulse > working.servo_maximum_us)
+            return ATLAS_ERROR_ARGUMENT;
+        /* Like enable, give the servo its destination once and let its own
+         * controller perform the move. Compare preload applies at the next
+         * PWM period; do not reset CNT or force an update on a running channel. */
+        __HAL_TIM_SET_COMPARE(timer, timer_channel, pulse);
+        working.commanded_pwm_us[channel] = pulse;
+        working.servo_target_us = pulse;
+        servo_changed_ms = now;
+    }
+    return ATLAS_OK;
+}
+#endif
 /** @brief Return all commanded outputs to their electrical defaults; budgets survive. */
 static void io_stop_all(void)
 {
@@ -543,8 +695,11 @@ static AtlasStatus io_execute_unlocked(const IoQueued *queued)
         return status;
     }
 #if ATLAS_BRINGUP
-    /* A separate, fixed-duration diagnostic path touches only the seven logic
-     * GPIOs. There is deliberately no bench override of PWM or pyro permission. */
+#if ATLAS_SERVO_BENCH
+    if (command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET)
+        return io_bench_servo_execute(queued, now);
+#endif
+    /* Ordinary Bringup keeps its no-PWM contract. Pyro has no bench override. */
     if (command->type == ATLAS_IO_BENCH_GPIO)
     {
         if (!command->arguments.gpio.high)
@@ -590,10 +745,10 @@ static AtlasStatus io_execute_unlocked(const IoQueued *queued)
             for (uint32_t i = 0; i < ATLAS_IO_PWM_CHANNELS; ++i)
                 if ((bits & (1U << i)) != 0U && (working.pwm_enabled_mask & (1U << i)) == 0U)
                 {
-                    TIM_HandleTypeDef *timer = i < 4U ? hw.pwm_1_to_4 : hw.pwm_5_to_8;
-                    __HAL_TIM_SET_COMPARE(timer, (i % 4U) * 4U, settings.pwm[i].neutral_us);
+                    TIM_HandleTypeDef *timer = io_pwm_timer(i);
+                    __HAL_TIM_SET_COMPARE(timer, pwm_routes[i].timer_channel, settings.pwm[i].neutral_us);
                     io_pwm_pin(i, true);
-                    if (HAL_TIM_PWM_Start(timer, (i % 4U) * 4U) != HAL_OK)
+                    if (HAL_TIM_PWM_Start(timer, pwm_routes[i].timer_channel) != HAL_OK)
                     { io_fail(ATLAS_ERROR_IO); return ATLAS_ERROR_IO; }
                     working.commanded_pwm_us[i] = settings.pwm[i].neutral_us;
                     working.pwm_enabled_mask |= (uint8_t)(1U << i);
@@ -605,8 +760,8 @@ static AtlasStatus io_execute_unlocked(const IoQueued *queued)
             if (channel >= ATLAS_IO_PWM_CHANNELS || (working.pwm_enabled_mask & (1U << channel)) == 0U ||
                 command->arguments.pwm.pulse_us < settings.pwm[channel].minimum_us ||
                 command->arguments.pwm.pulse_us > settings.pwm[channel].maximum_us) return ATLAS_ERROR_ARGUMENT;
-            __HAL_TIM_SET_COMPARE(channel < 4U ? hw.pwm_1_to_4 : hw.pwm_5_to_8,
-                                  (channel % 4U) * 4U, command->arguments.pwm.pulse_us);
+            __HAL_TIM_SET_COMPARE(io_pwm_timer(channel), pwm_routes[channel].timer_channel,
+                                  command->arguments.pwm.pulse_us);
             working.commanded_pwm_us[channel] = command->arguments.pwm.pulse_us;
             return ATLAS_OK;
         case ATLAS_IO_GPIO_SET:
@@ -688,11 +843,16 @@ static void io_task(void *argument)
 #if ATLAS_BRINGUP
         io_bench_gpio_service(now);
 #endif
+#if ATLAS_SERVO_BENCH
+        io_bench_servo_service(now);
+#else
+        /* Flight permission/voltage policy must not also cut a ServoBench channel. */
         const bool permitted = !emergency_latched && AtlasRtos_OutputsPermitted() && io_rail(ATLAS_ANALOG_3V3, now, 3000U, 3600U);
         if (last_permitted && !permitted) io_stop_all();
         last_permitted = permitted;
         if (working.pwm_enabled_mask != 0U && !io_rail(ATLAS_ANALOG_PWM_SUPPLY, now, 4800U, 8400U))
         { io_pwm_disable(UINT8_MAX); ++output_epoch; }
+#endif
         if (emergency_latched && !emergency_handled)
         {
             AtlasIo_EmergencyStop();
@@ -746,6 +906,21 @@ static void io_task(void *argument)
     }
 }
 
+#if ATLAS_SERVO_BENCH
+/** @brief Average 16 conversions in hardware without changing 16-bit scaling.
+ * @param adc Disabled ADC1 or ADC3 handle, before HAL initialization/calibration.
+ * @note Owner approved short averaging; 8.55 V is tested against this average.
+ * The long sample time remains. There is no software moving window, delay,
+ * ignored outlier, or conversion of failed/stale data into a valid voltage. */
+static void io_servo_adc_average(ADC_HandleTypeDef *adc)
+{
+    adc->Init.OversamplingMode = ENABLE;
+    adc->Init.Oversampling.Ratio = ATLAS_IO_SERVO_ADC_SAMPLES;
+    adc->Init.Oversampling.RightBitShift = ADC_RIGHTBITSHIFT_4;
+    adc->Init.Oversampling.TriggeredMode = ADC_TRIGGEREDMODE_SINGLE_TRIGGER;
+    adc->Init.Oversampling.OversamplingStopReset = ADC_REGOVERSAMPLING_CONTINUED_MODE;
+}
+#endif
 /** @brief Initialize private buffers, calibrated ADCs and static service objects.
  * @param hardware Generated handles. @return Startup status, always outputs-off. */
 AtlasStatus AtlasIo_Start(const AtlasIoHardware *hardware)
@@ -769,6 +944,7 @@ AtlasStatus AtlasIo_Start(const AtlasIoHardware *hardware)
     hw = *hardware;
     hardware_ready = true;
     working.reset_flags = RCC->RSR; /* Read only: do not erase debugger/reset provenance. */
+    working.reference_calibration = *VREFINT_CAL_ADDR;
     for (uint32_t i = 0; i < 4U; ++i)
     { ((volatile uint64_t *)adc_buffer.ecc)[i] = 0U; ((volatile uint64_t *)pyro_buffer.ecc)[i] = 0U; }
     __DSB();
@@ -789,6 +965,12 @@ AtlasStatus AtlasIo_Start(const AtlasIoHardware *hardware)
     hw.adc_internal->Init.ScanConvMode = ADC_SCAN_DISABLE;
     hw.adc_internal->Init.NbrOfConversion = 1U;
     hw.adc_internal->Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+#if ATLAS_SERVO_BENCH
+    io_servo_adc_average(hw.adc_external);
+    io_servo_adc_average(hw.adc_internal);
+    if (HAL_ADC_Init(hw.adc_external) != HAL_OK)
+    { AtlasIo_EmergencyStop(); return ATLAS_ERROR_IO; }
+#endif
     if (*VREFINT_CAL_ADDR == 0U || *VREFINT_CAL_ADDR == UINT16_MAX ||
         *TEMPSENSOR_CAL1_ADDR == 0U || *TEMPSENSOR_CAL2_ADDR == 0U ||
         *TEMPSENSOR_CAL1_ADDR == UINT16_MAX || *TEMPSENSOR_CAL2_ADDR == UINT16_MAX ||
@@ -817,9 +999,11 @@ AtlasStatus AtlasIo_Submit(const AtlasIoCommand *command, uint32_t *ticket)
 {
     if (command == NULL) return ATLAS_ERROR_NULL;
     if (!io_context()) return ATLAS_ERROR_STATE;
-    if ((uint32_t)command->type > ATLAS_IO_BENCH_GPIO) return ATLAS_ERROR_ARGUMENT;
+    if ((uint32_t)command->type > ATLAS_IO_BENCH_SERVO_SET) return ATLAS_ERROR_ARGUMENT;
+    const bool servo = command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET;
+    if (servo && !ATLAS_SERVO_BENCH) return ATLAS_ERROR_UNSUPPORTED;
     if (!ATLAS_BRINGUP && command->type == ATLAS_IO_BENCH_GPIO) return ATLAS_ERROR_UNSUPPORTED;
-    if (ATLAS_BRINGUP && command->type != ATLAS_IO_BENCH_GPIO &&
+    if (ATLAS_BRINGUP && !servo && command->type != ATLAS_IO_BENCH_GPIO &&
         command->type != ATLAS_IO_PWM_DISABLE && command->type != ATLAS_IO_PYRO_DISARM &&
         !(command->type == ATLAS_IO_GPIO_SET && !command->arguments.gpio.high)) return ATLAS_ERROR_UNSUPPORTED;
     IoQueued queued = {0};
@@ -828,6 +1012,11 @@ AtlasStatus AtlasIo_Submit(const AtlasIoCommand *command, uint32_t *ticket)
     taskENTER_CRITICAL();
     queued.ticket = ++next_ticket;
     queued.epoch = output_epoch;
+#if ATLAS_SERVO_BENCH
+    AtlasUsbHealth usb = {0};
+    if (AtlasUsb_GetHealth(&usb)) queued.usb_session = usb.session;
+    queued.servo_cancel = servo_cancel_epoch;
+#endif
     taskEXIT_CRITICAL();
     if (xQueueSend(requests, &queued, 0U) != pdTRUE) return ATLAS_ERROR_BUSY;
     if (ticket != NULL) *ticket = queued.ticket;

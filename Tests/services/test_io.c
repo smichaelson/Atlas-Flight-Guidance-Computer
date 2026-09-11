@@ -9,6 +9,7 @@
 #include "../../App/Src/atlas_io.c"
 #include <assert.h>
 #include <stdio.h>
+#include <setjmp.h>
 
 GPIO_TypeDef test_gpio[7];
 TIM_TypeDef test_tim[3];
@@ -26,6 +27,8 @@ RAMECC_HandleTypeDef hramecc1_m1,hramecc1_m4,hramecc2_m1,hramecc3_m1;
 static TIM_HandleTypeDef timers[3];
 static DMA_HandleTypeDef dmas[2];
 static ADC_HandleTypeDef adcs[2];
+static jmp_buf owner_loop_exit;
+static unsigned owner_cycles_remaining;
 #if ATLAS_BRINGUP
 static AtlasUsbHealth bench_test_usb;
 bool AtlasUsb_GetHealth(AtlasUsbHealth *health) { *health=bench_test_usb;return true; }
@@ -49,7 +52,12 @@ uint32_t HAL_RCC_GetPCLK2Freq(void) { return 50000000U; }
 BaseType_t xTaskGetSchedulerState(void) { return test_scheduler; }
 TickType_t xTaskGetTickCount(void) { return test_tick; }
 void vTaskDelay(TickType_t ticks) { test_tick+=ticks; }
-void vTaskDelayUntil(TickType_t *wake,TickType_t period) { *wake+=period; test_tick=*wake; }
+void vTaskDelayUntil(TickType_t *wake,TickType_t period)
+{
+    *wake+=period; test_tick=*wake;
+    if (owner_cycles_remaining != 0U && --owner_cycles_remaining == 0U)
+        longjmp(owner_loop_exit, 1);
+}
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task) { (void)task; return 1000U; }
 TaskHandle_t xTaskCreateStatic(void (*entry)(void *),const char *name,uint32_t words,void *argument,
     UBaseType_t priority,StackType_t *stack,StaticTask_t *control)
@@ -107,6 +115,9 @@ void HAL_RAMECC_IRQHandler(RAMECC_HandleTypeDef *m) { HAL_RAMECC_DetectErrorCall
 /** @brief Reset an inert fixture; startup/linker/hardware calibration are tested separately. */
 static void fixture(void)
 {
+#if ATLAS_SERVO_BENCH
+    servo_cancel_epoch=servo_seen_cancel=servo_started_ms=servo_changed_ms=servo_usb_session=0U;
+#endif
 #if ATLAS_BRINGUP
     bench_gpio_active=false;bench_gpio_started_ms=0U;
     bench_test_usb=(AtlasUsbHealth){.configured=true,.dtr=true};
@@ -116,6 +127,10 @@ static void fixture(void)
     memset(test_adc,0,sizeof(test_adc));memset(adcs,0,sizeof(adcs));
     test_tick=1000U;test_permitted=true;emergency_latched=false;hardware_ready=true;started=true;
     configured_locked=false;pulse_active=pulse_complete=pulse_failed=false;test_abort_fails=false;
+    owner_cycles_remaining=0U;
+#if !ATLAS_SERVO_BENCH
+    last_permitted=false;
+#endif
     test_primask=test_ipsr=0U;test_safety_pending=false;external_pending=internal_pending=false;
     reference_valid=false;internal_temperature=false;
     reference_vdda=reference_started_ms=internal_started_ms=next_ticket=output_epoch=0U;
@@ -154,7 +169,26 @@ static void command_cases(void)
     assert(io_execute(&item)==ATLAS_OK); /* Safety IRQ waits until bounded register work ends. */
     assert(emergency_latched && TIM1->CCER==0U && (GPIOE->MODER&(3U<<18))==(1U<<18));
     assert(io_execute(&item)==ATLAS_ERROR_STATE);
-    puts("PASS IO: default inhibition, copied command, calibrated PWM bounds, expiry, deferred emergency IRQ");
+    /* Normal flight API uses the same PCB labels, while retaining its own gates. */
+    for(unsigned ch=0U;ch<8U;++ch)
+    {
+        fixture();working.configured=true;settings.pwm_allowed_mask=255U;
+        settings.pwm[ch]=(AtlasPwmCalibration){900U,1500U,2100U};
+        const unsigned bank[]={1U,1U,0U,0U,0U,0U,1U,1U};
+        const unsigned compare[]={2U,3U,0U,1U,2U,3U,0U,1U};
+        item=(IoQueued){.command={.type=ATLAS_IO_PWM_ENABLE,.arguments.channel_mask=(uint8_t)(1U<<ch)},.submitted_ms=test_tick};
+        assert(io_execute(&item)==ATLAS_OK);
+        assert(test_tim[bank[ch]].CCR[compare[ch]]==1500U);
+        item.command=(AtlasIoCommand){.type=ATLAS_IO_PWM_SET,.arguments.pwm={(uint8_t)ch,1600U}};
+        assert(io_execute(&item)==ATLAS_OK && test_tim[bank[ch]].CCR[compare[ch]]==1600U);
+        item.command=(AtlasIoCommand){.type=ATLAS_IO_PWM_DISABLE,.arguments.channel_mask=(uint8_t)(1U<<ch)};
+        assert(io_execute(&item)==ATLAS_OK && TIM1->CCER==0U && TIM3->CCER==0U);
+        working.analog.millivolts[1]=8420U;
+        item.command=(AtlasIoCommand){.type=ATLAS_IO_PWM_ENABLE,.arguments.channel_mask=(uint8_t)(1U<<ch)};
+        item.epoch=output_epoch;
+        assert(io_execute(&item)==ATLAS_ERROR_ARGUMENT);
+    }
+    puts("PASS IO: copied/bounded PWM, all PCB routes, normal voltage gates, expiry and emergency IRQ");
 }
 /** @brief Verify that OFF commands fence queued assertions and ECC events are consumed once. */
 static void inhibition_cases(void)
@@ -253,6 +287,190 @@ static void bench_cases(void)
 }
 #endif
 /** @brief Check completed-only ADC data consumption and single-rank ADC3 sequencing. */
+#if ATLAS_SERVO_BENCH
+static IoQueued servo_request(AtlasIoCommand command)
+{
+    IoQueued queued;
+    assert(AtlasIo_Submit(&command,NULL)==ATLAS_OK);
+    assert(xQueueReceive(requests,&queued,0U)==pdTRUE);
+    return queued;
+}
+static void servo_fresh(void)
+{ working.analog.sampled_at_ms=working.analog.reference_at_ms=test_tick; }
+/* Exercise the actual task, including policy checks after the ServoBench service.
+ * The second iteration is where the old shared 4.8-8.4 V gate cut live PWM. */
+static void servo_owner_loop_cases(void)
+{
+    fixture();
+    for(unsigned i=0U;i<2U;++i)
+    {
+        io_servo_adc_average(&adcs[i]);
+        assert(adcs[i].Init.OversamplingMode==ENABLE && adcs[i].Init.Oversampling.Ratio==16U);
+        assert(adcs[i].Init.Oversampling.RightBitShift==ADC_RIGHTBITSHIFT_4);
+        assert(adcs[i].Init.Oversampling.TriggeredMode==ADC_TRIGGEREDMODE_SINGLE_TRIGGER);
+        assert(adcs[i].Init.Oversampling.OversamplingStopReset==ADC_REGOVERSAMPLING_CONTINUED_MODE);
+    }
+    const uint32_t accepted_mv[] = {1U,4799U,8420U,8550U};
+    for (unsigned i = 0U; i < sizeof(accepted_mv)/sizeof(accepted_mv[0]); ++i)
+    {
+        fixture();test_permitted=false;
+        working.analog.millivolts[1]=accepted_mv[i];
+        working.analog.millivolts[0]=4000U;working.analog.millivolts[4]=12000U;
+        working.analog.valid_mask=2U;
+        AtlasIoCommand enable={.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0U,1320U,1720U}};
+        assert(AtlasIo_Submit(&enable,NULL)==ATLAS_OK);
+        owner_cycles_remaining=2U;
+        if (setjmp(owner_loop_exit)==0) io_task(NULL);
+        assert(published.heartbeat==2U && published.status==ATLAS_OK);
+        assert(published.pwm_enabled_mask==1U && published.commanded_pwm_us[0]==1520U);
+        assert(published.servo_ready && published.servo_stop_reason==0U);
+        assert(!published.pyro.software_armed && test_dma_launches==0U);
+    }
+    fixture();test_permitted=false;
+    AtlasIoCommand enable={.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0U,1320U,1720U}};
+    assert(AtlasIo_Submit(&enable,NULL)==ATLAS_OK);
+    owner_cycles_remaining=2U;if(setjmp(owner_loop_exit)==0)io_task(NULL);
+    working.analog.millivolts[1]=8551U;
+    owner_cycles_remaining=1U;if(setjmp(owner_loop_exit)==0)io_task(NULL);
+    assert(published.pwm_enabled_mask==0U && published.servo_stop_reason==4U);
+    assert(published.servo_stop_pwm_mv==8551U && published.servo_target_us==0U);
+    assert(TIM1->CCER==0U && TIM3->CCER==0U);
+    puts("PASS ServoBench full owner loop: accepted voltage survives; 8551 mV cuts and records evidence");
+}
+/* Expected hardware destinations from manufacturing copper and placement,
+ * independently stated here rather than using the implementation routing table. */
+static void servo_cases(void)
+{
+    TIM_TypeDef *const expected_timer[]={TIM3,TIM3,TIM1,TIM1,TIM1,TIM1,TIM3,TIM3};
+    GPIO_TypeDef *const expected_port[]={GPIOB,GPIOB,GPIOE,GPIOE,GPIOE,GPIOE,GPIOC,GPIOC};
+    const unsigned expected_compare[]={2U,3U,0U,1U,2U,3U,0U,1U};
+    const unsigned expected_shift[]={0U,2U,18U,22U,26U,28U,12U,14U};
+    for (unsigned ch=0U;ch<8U;++ch)
+    {
+        fixture();test_permitted=false; /* Flight output permission stays false. */
+        AtlasIoCommand enable={.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={(uint8_t)ch,1320U,1720U}};
+        IoQueued queued=servo_request(enable);
+        assert(io_execute(&queued)==ATLAS_OK && working.pwm_enabled_mask==(1U<<ch));
+        assert(working.commanded_pwm_us[ch]==1520U);
+        assert(expected_timer[ch]->CCER==(1U<<(expected_compare[ch]*4U)));
+        assert(expected_timer[ch]->CCR[expected_compare[ch]]==1520U);
+        assert((expected_port[ch]->MODER&(3U<<expected_shift[ch]))==(2U<<expected_shift[ch]));
+        for(unsigned bank=0;bank<2U;++bank)
+            for(unsigned compare=0;compare<4U;++compare)
+                if(&test_tim[bank]!=expected_timer[ch]||compare!=expected_compare[ch])
+                    assert(test_tim[bank].CCR[compare]==0U);
+        assert(io_execute(&queued)==ATLAS_ERROR_BUSY); /* Never overlap or silently recenter. */
+        IoQueued move=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SET,.arguments.pwm={(uint8_t)ch,1721U}});
+        assert(io_execute(&move)==ATLAS_ERROR_ARGUMENT);
+        move.command.arguments.pwm.pulse_us=1720U;
+        expected_timer[ch]->CNT=1234U;expected_timer[ch]->EGR=0U;
+        const uint32_t running_ccer=expected_timer[ch]->CCER;
+        const uint32_t running_cr1=expected_timer[ch]->CR1;
+        assert(io_execute(&move)==ATLAS_OK && working.commanded_pwm_us[ch]==1720U);
+        assert(working.servo_target_us==1720U);
+        assert(expected_timer[ch]->CCR[expected_compare[ch]]==1720U);
+        /* SET writes one preloaded destination without restarting the timer or
+         * issuing an update event that could truncate the current PWM pulse. */
+        assert(expected_timer[ch]->CNT==1234U && expected_timer[ch]->EGR==0U);
+        assert(expected_timer[ch]->CCER==running_ccer && expected_timer[ch]->CR1==running_cr1);
+        for(unsigned step=1;step<=20U;++step)
+        {
+            test_tick+=5U;servo_fresh();io_bench_servo_service(test_tick);
+            assert(working.commanded_pwm_us[ch]==1720U);
+            assert(expected_timer[ch]->CCR[expected_compare[ch]]==1720U);
+        }
+        /* Reversing uses the same direct-position path as an outward move. */
+        move=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SET,.arguments.pwm={(uint8_t)ch,1320U}});
+        assert(io_execute(&move)==ATLAS_OK && working.commanded_pwm_us[ch]==1320U);
+        assert(expected_timer[ch]->CCR[expected_compare[ch]]==1320U && working.servo_target_us==1320U);
+        assert(expected_timer[ch]->CNT==1234U && expected_timer[ch]->EGR==0U);
+        test_tick+=100U;servo_fresh();io_bench_servo_service(test_tick);
+        assert(working.commanded_pwm_us[ch]==1320U);
+        move=servo_request(move.command);
+        AtlasIo_BenchServoStop(); /* Register deassertion even before the owner resumes. */
+        assert(TIM1->CCER==0U && TIM3->CCER==0U);
+        assert(io_execute(&move)==ATLAS_ERROR_STATE); /* Stop fences accepted-before-stop work. */
+        io_bench_servo_service(test_tick);
+        assert(working.pwm_enabled_mask==0U && working.servo_stop_reason==1U);
+        assert(working.servo_target_us==0U);
+        assert((expected_port[ch]->MODER&(3U<<expected_shift[ch]))==(1U<<expected_shift[ch]));
+        const unsigned last_compare=expected_timer[ch]->CCR[expected_compare[ch]];
+        test_tick+=5U;servo_fresh();io_bench_servo_service(test_tick);
+        assert(expected_timer[ch]->CCR[expected_compare[ch]]==last_compare && TIM1->CCER==0U && TIM3->CCER==0U);
+        assert(!working.pyro.software_armed && test_dma_launches==0U);
+        /* KST's factory nominal -50/0/+50 degrees, on each physical route. */
+        enable.arguments.servo.minimum_us=1000U;enable.arguments.servo.maximum_us=2000U;
+        queued=servo_request(enable);assert(io_execute(&queued)==ATLAS_OK);
+        const uint16_t full_positions[]={1000U,1500U,2000U,1500U};
+        for(unsigned position=0;position<4U;++position)
+        {
+            move=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SET,
+                .arguments.pwm={(uint8_t)ch,full_positions[position]}});
+            assert(io_execute(&move)==ATLAS_OK);
+            assert(working.commanded_pwm_us[ch]==full_positions[position]);
+            assert(expected_timer[ch]->CCR[expected_compare[ch]]==full_positions[position]);
+        }
+        move.command.arguments.pwm.pulse_us=999U;assert(io_execute(&move)==ATLAS_ERROR_ARGUMENT);
+        move.command.arguments.pwm.pulse_us=2001U;assert(io_execute(&move)==ATLAS_ERROR_ARGUMENT);
+        assert(expected_timer[ch]->CCR[expected_compare[ch]]==1500U);
+        AtlasIo_BenchServoStop();io_bench_servo_service(test_tick);
+    }
+    for (unsigned reason=0U;reason<10U;++reason)
+    {
+        fixture();IoQueued enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0U,1320U,1720U}});
+        assert(io_execute(&enable)==ATLAS_OK);
+        if(reason==0U)bench_test_usb.dtr=false;
+        if(reason==1U)bench_test_usb.configured=false;
+        if(reason==2U)++bench_test_usb.session;
+        if(reason==3U)working.analog.millivolts[1]=8551U;
+        if(reason==4U)working.analog.millivolts[1]=0U;
+        if(reason==5U)working.status=ATLAS_ERROR_IO;
+        if(reason==6U)working.analog.reference_at_ms=test_tick-251U;
+        if(reason==7U)working.analog.valid_mask&=~2U;
+        if(reason==8U)working.analog.sampled_at_ms=test_tick-101U;
+        if(reason==9U)AtlasIo_EmergencyStop();
+        io_bench_servo_service(test_tick);
+        assert(working.pwm_enabled_mask==0U);
+        assert(io_execute(&enable)==ATLAS_ERROR_STATE);
+    }
+    const uint32_t accepted_mv[]={1U,4799U,8301U,8420U,8550U};
+    for (unsigned i=0U;i<sizeof(accepted_mv)/sizeof(accepted_mv[0]);++i)
+    {
+        fixture();working.analog.millivolts[1]=accepted_mv[i];
+        working.analog.millivolts[0]=4000U;working.analog.millivolts[4]=12000U;
+        working.analog.valid_mask=2U; /* Unrelated ranks no longer gate ServoBench. */
+        IoQueued enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0U,1320U,1720U}});
+        assert(io_execute(&enable)==ATLAS_OK);
+        io_bench_servo_service(test_tick);
+        assert(working.pwm_enabled_mask==1U && working.servo_ready);
+        assert(!working.pyro.software_armed && test_dma_launches==0U);
+    }
+    fixture();test_tick=UINT32_MAX-1000U;servo_fresh();
+    IoQueued enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={7U,900U,2100U}});
+    assert(io_execute(&enable)==ATLAS_OK);
+    test_tick+=2999U;servo_fresh();io_bench_servo_service(test_tick);
+    assert(working.pwm_enabled_mask==128U && working.servo_remaining_ms==1U);
+    ++test_tick;servo_fresh();io_bench_servo_service(test_tick);
+    assert(working.pwm_enabled_mask==0U && working.servo_stop_reason==2U);
+    fixture();enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0U,1320U,1720U}});
+    assert(io_execute(&enable)==ATLAS_OK);
+    for(unsigned step=1U;step<=15U;++step)
+    {
+        test_tick+=2000U;servo_fresh();
+        IoQueued move=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SET,.arguments.pwm={0U,1500U}});
+        assert(io_execute(&move)==(step<15U?ATLAS_OK:ATLAS_ERROR_STATE));
+        io_bench_servo_service(test_tick);
+    }
+    assert(working.pwm_enabled_mask==0U); /* Motion cannot extend the 30 s session. */
+    fixture();enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0U,1320U,1720U}});
+    AtlasIo_BenchServoStop();
+    assert(io_execute(&enable)==ATLAS_ERROR_STATE); /* Stop before queued enable executes. */
+    fixture();enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0U,1320U,1720U}});
+    ++bench_test_usb.session;
+    assert(io_execute(&enable)==ATLAS_ERROR_STATE); /* Rapid USB reconnect cannot replay it. */
+    puts("PASS ServoBench: eight routes, direct targets/full range, timer phase retained, stop fence, USB epochs, 8550/8551mV boundary, ADC/fault cutoff, idle/wrap/30s expiry");
+}
+#endif
 static void analog_cases(void)
 {
     fixture();reference_valid=true;reference_vdda=3300U;reference_started_ms=test_tick;
@@ -263,6 +481,8 @@ static void analog_cases(void)
     assert(io_sample(test_tick) && working.analog.sequence==1U && working.analog.millivolts[0]==3300U);
     assert(io_internal_start(false)==HAL_OK && ADC3->selected_channel==ADC_CHANNEL_VREFINT);
     ADC3->raw=test_vref_cal;ADC3->ISR=ADC_FLAG_EOC;io_reference(test_tick);
+    assert(reference_vdda==3300U && reference_valid && working.reference_computed_mv==3300U);
+    assert(working.reference_vref_raw==test_vref_cal && working.status==ATLAS_OK);
     assert(ADC3->selected_channel==ADC_CHANNEL_TEMPSENSOR && internal_pending);
     ADC3->raw=test_temp_cal1;ADC3->ISR=ADC_FLAG_EOC;io_reference(test_tick);
     assert(!internal_pending && working.analog.die_temperature_c==30);
@@ -289,6 +509,10 @@ int main(void)
 {
 #if ATLAS_BRINGUP
     bench_cases();
+#if ATLAS_SERVO_BENCH
+    servo_owner_loop_cases();
+    servo_cases();
+#endif
 #else
     command_cases();inhibition_cases();pulse_cases();
 #endif

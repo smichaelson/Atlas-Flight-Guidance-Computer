@@ -40,6 +40,7 @@ HAL_StatusTypeDef HAL_SD_Init(SD_HandleTypeDef *sd)
         sd->Init.BusWide != SDMMC_BUS_WIDE_1B || sd->Init.ClockDiv != 1U ||
         sd->Init.HardwareFlowControl != SDMMC_HARDWARE_FLOW_CONTROL_ENABLE ||
         sd->Init.ClockPowerSave != SDMMC_CLOCK_POWER_SAVE_DISABLE;
+    if (fail_init) sd->ErrorCode = 0x40000000U;
     return bad_handle || fail_init ? HAL_ERROR : HAL_OK;
 }
 /** @brief Model card/host width agreement. @param sd Handle. @param width Width.
@@ -59,7 +60,7 @@ HAL_StatusTypeDef HAL_SD_ReadBlocks(SD_HandleTypeDef *sd, uint8_t *data,
     CHECK(((uintptr_t)data & 3U) == 0U);
     ++io_count;
     if (remove_during_io) { present = false; BSP_SD_DetectFromISR(); return HAL_ERROR; }
-    if (timeout_io) { tick += timeout; return HAL_TIMEOUT; }
+    if (timeout_io) { sd->ErrorCode = 0x20U; tick += timeout; return HAL_TIMEOUT; }
     memcpy(data, media[address], 512);
     return HAL_OK;
 }
@@ -122,11 +123,17 @@ int main(void)
     const uint32_t reset_before = reset_count;
     CHECK(SD_Driver.disk_read(0, unaligned, 0, 1) == RES_ERROR);
     CHECK(reset_count > reset_before && hsd1.Instance == NULL);
+    BSP_SD_Diagnostics diagnostic;
+    BSP_SD_GetDiagnostics(&diagnostic);
+    CHECK(diagnostic.stage == 4U && diagnostic.hal_status == HAL_TIMEOUT && diagnostic.hal_error == 0x20U);
+    CHECK(hsd1.ErrorCode == 0U); /* Controller reset must not erase the retained failure. */
     CHECK(SD_Driver.disk_read(0, unaligned, 0, 1) == RES_NOTRDY);
     timeout_io = false;
     CHECK(SD_Driver.disk_initialize(0) != 0); /* Fault consumes old mount authority. */
     SD_PrepareMount();
     CHECK(SD_Driver.disk_initialize(0) == 0);
+    BSP_SD_GetDiagnostics(&diagnostic);
+    CHECK(diagnostic.stage == 0U && diagnostic.hal_error == 0U); /* Explicit remount resets history. */
     busy_card = true;
     const uint32_t wait_start = tick;
     CHECK(SD_Driver.disk_ioctl(0, CTRL_SYNC, NULL) == RES_ERROR);
@@ -151,8 +158,12 @@ int main(void)
     fail_init = true;
     SD_PrepareMount();
     CHECK(SD_Driver.disk_initialize(0) != 0 && hsd1.Instance == NULL);
+    BSP_SD_GetDiagnostics(&diagnostic);
+    CHECK(diagnostic.stage == 2U && diagnostic.hal_status == HAL_ERROR && diagnostic.hal_error == 0x40000000U);
+    CHECK(diagnostic.detect_edges >= 3U);
     fail_init = false;
     puts("PASS SD: absent card, rapid replacement, mid-transfer removal, failed init");
+    puts("PASS SD: first HAL failure survives reset, detect edges retained, explicit remount clears diagnostics");
 
     make_ram_volume();
     FATFS volume;

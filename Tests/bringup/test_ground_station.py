@@ -80,6 +80,19 @@ class StationTests(unittest.TestCase):
         self.assertFalse(self.s.snapshot()["fresh"])
         with self.assertRaises(ValueError): self.s.action("command",dict(verb="beep"))
 
+    def test_compact_snapshot_preserves_all_control_evidence_without_history(self):
+        self.live()
+        for _ in range(240): self.s.ingest(demo.status(),time.monotonic())
+        self.s.event('retained event')
+        with patch.object(gs.time,'monotonic',return_value=time.monotonic()):
+            full,compact=self.s.snapshot(),self.s.snapshot(compact=True)
+        for key in full:
+            self.assertEqual(compact[key],[] if key in ('rows','history','events') else full[key],key)
+        self.assertLess(len(json.dumps(compact)),len(json.dumps(full))/50)
+        self.assertEqual(len(self.s.snapshot()['history']),240)
+        self.assertTrue(self.s.snapshot()['events'])
+        self.assertEqual(self.s.serial.writes,[])
+
     def test_demo_never_opens_serial_or_commands(self):
         with patch("serial.Serial", side_effect=AssertionError("No hardware in demo")):
             self.s.action("demo",{})
@@ -315,11 +328,47 @@ class ApiTests(unittest.TestCase):
     def test_big_body_rejected(self):self.assertEqual(self.request("/api/demo",{"Content-Type":"application/json"}," "*4097)[0],400)
     def test_non_object_rejected(self):self.assertEqual(self.request("/api/demo",{"Content-Type":"application/json"},"[]")[0],400)
     def test_fixed_asset_paths(self):self.assertEqual(self.request("/../../README.md")[0],404)
+    def test_compact_servo_state_uses_the_same_api_protection(self):
+        self.assertEqual(self.request('/api/servo-state',{'X-Atlas-Token':'wrong'})[0],403)
+        self.assertEqual(self.request('/api/servo-state',{'Sec-Fetch-Site':'cross-site'})[0],403)
+        code,body,_=self.request('/api/servo-state')
+        self.assertEqual(code,200)
+        value=json.loads(body)
+        self.assertIn('status',value);self.assertIn('servo_control_epoch',value)
+        self.assertEqual(value['history'],[])
     def test_valid_demo_request(self):
         self.assertEqual(self.request("/api/demo",{"Content-Type":"application/json"},"{}")[0],200)
 
 
 class UpdateTests(unittest.TestCase):
+    def test_dfu_ack_drained_before_windows_removal(self):
+        import serial
+        class DfuSerial(WindowsOpeningSerial):
+            def __init__(self, corrupt=False, missing=False):
+                super().__init__(); self.after_write=False; self.corrupt=corrupt; self.missing=missing
+                h=demo.hello(); h.update(uid=[1,2,3],software_dfu=True)
+                self.startup=json.dumps(h).encode()+b'\n'+json.dumps(demo.status()).encode()+b'\n'
+            def __enter__(self): self.open(); return self
+            def __exit__(self,*_): self.close()
+            def write(self,data):
+                super().write(data);self.after_write=True
+                reply=dict(type='reply',schema=1,id=int(data.split()[0]),status=0,name='OK',detail='Entering ROM',verified_bytes=0)
+                self.data=(b'broken\n' if self.corrupt else b'')+json.dumps(reply).encode()+b'\n'
+                if self.missing: self.data=b''
+                return len(data)
+            def read(self,count):
+                if self.after_write and count>len(self.data):
+                    # Windows cancels a long pending read at USB removal. The
+                    # short ACK was available before removal but never returned.
+                    self.data=b'';raise serial.SerialException('device removed')
+                return super().read(count)
+        for corrupt,missing in ((False,False),(True,False),(False,True)):
+            device=DfuSerial(corrupt,missing)
+            with self.subTest(corrupt=corrupt,missing=missing),patch('serial.Serial',return_value=device):
+                if corrupt or missing:
+                    with self.assertRaises((ValueError,OSError)):fw.enter_dfu('MODEL-ONLY',[1,2,3],report=lambda _:None)
+                else:fw.enter_dfu('MODEL-ONLY',[1,2,3],report=lambda _:None)
+                self.assertTrue(device.closed);self.assertEqual(len(device.writes),1)
     def test_uid_parse_requires_address_and_three_words(self):
         self.assertEqual(fw.parse_uid("0x1FF1E800 : 00000001 00000002 DEADBEEF"),[1,2,0xdeadbeef])
         for text in ("00000001 00000002 DEADBEEF","0x1FF1E804 : 00000001 00000002 DEADBEEF","0x1FF1E800 : 00000001"):
@@ -344,7 +393,7 @@ class UpdateTests(unittest.TestCase):
     @patch.object(fw,"programmer_path",return_value=Path("official-ST-tool.exe"))
     @patch.object(fw,"verify",return_value=dict(program_file="frozen.hex"))
     def test_success_verifies_before_start(self,*_):
-        with patch.object(fw,"run_cli",side_effect=["USB Port : USB1\nSerial number : ABCDEF123456", "Device ID : 0x450\n0x1FF1E800 : 00000001 00000002 00000003\n0x1FF1E7FE : 92","Download verified successfully","Application started"]) as run:
+        with patch.object(fw,"run_cli",side_effect=["Device Index : USB1\nSerial number : ABCDEF123456", "Device ID : 0x450\n0x1FF1E800 : 00000001 00000002 00000003\n0x1FF1E7FE : 92","Download verified successfully","Application started"]) as run:
             result=fw.program(Path("fixture"),[1,2,3],report=lambda _:None)
             self.assertTrue(result["flash_verified"])
             self.assertFalse(result["application_reconnected"])

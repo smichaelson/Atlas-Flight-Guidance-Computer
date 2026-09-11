@@ -24,6 +24,10 @@ set(CMAKE_PROJECT_NAME Atlas)
 # Enable compile command to ease indexing with e.g. clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 option(ATLAS_BRINGUP "Build the non-actuating PCB diagnostic application" OFF)
+option(ATLAS_SERVO_BENCH "Allow bounded, explicitly enabled servo tests (pyro inhibited)" OFF)
+if(ATLAS_SERVO_BENCH AND NOT ATLAS_BRINGUP)
+    message(FATAL_ERROR "ServoBench requires ATLAS_BRINGUP=ON")
+endif()
 
 # Core project settings
 project(${CMAKE_PROJECT_NAME})
@@ -94,9 +98,13 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     ATLAS_USE_FREERTOS=1
     ATLAS_BRINGUP=$<BOOL:${ATLAS_BRINGUP}>
+    ATLAS_SERVO_BENCH=$<BOOL:${ATLAS_SERVO_BENCH}>
 )
 
-if(ATLAS_BRINGUP)
+if(ATLAS_SERVO_BENCH)
+    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "Atlas-ServoBench")
+    set(ATLAS_PROFILE_NAME "servo_bench")
+elseif(ATLAS_BRINGUP)
     set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "Atlas-Bringup")
     set(ATLAS_PROFILE_NAME "bringup")
 else()

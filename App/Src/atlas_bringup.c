@@ -29,7 +29,11 @@
 #define BENCH_WATCH_STACK_WORDS 512U
 #define BENCH_TX_CAPACITY 8192U
 #define BENCH_REPLY_COUNT 4U
+#if ATLAS_SERVO_BENCH
+#define BENCH_PERIOD_MS 100U
+#else
 #define BENCH_PERIOD_MS 500U
+#endif
 #define BENCH_IO_ALIVE_MS 2000U
 #define BENCH_OPERATION_MS 40000U
 #define BENCH_TEST_TEXT "ATLAS_LINK_TEST_1\r\n"
@@ -60,7 +64,7 @@ typedef struct
     AtlasBno085Health bno_health;
     uint32_t bno_pending_length, bno_intn_low, bno_initialized;
     uint32_t led_commanded, led_gates, led_initialized, led_inhibited;
-    uint32_t buzzer_playing, buzzer_note, buzzer_hz, buzzer_status;
+    uint32_t buzzer_playing, buzzer_note, buzzer_notes, buzzer_hz, buzzer_status, buzzer_track;
     uint32_t ble_received, radio_received;
     uint8_t ble_rx[32], radio_rx[32], ble_length, radio_length;
     char ble_model[ATLAS_BLE_IDENTITY_CAPACITY], ble_firmware[ATLAS_BLE_IDENTITY_CAPACITY];
@@ -108,28 +112,40 @@ typedef struct
 {
     uint16_t hz, tone_ms, gap_ms;
 } BenchNote;
-/* These pitches reproduce only the owner's supplied note sequence; timing and
- * octaves are chosen for this simplified piezo arrangement (1–10 kHz range). */
+/* Adaptation of the owner's rough phrases. E/B landing notes are flattened,
+ * the closing E-B-G figure is repeated, and dotted 3:1 rhythm replaces equal
+ * staccato gaps. Keep the owner's preferred lower octave. The two opening
+ * phrases each occupy four seconds. The bridge restores high G and the short
+ * E-Eb-E turn, then lands on Bb rather than B natural. The owner-approved
+ * closing phrase starts at 13.25 s with Eb-F#-Eb-Bb before returning to G. */
 static const BenchNote bench_march[] = {
-    /* G G G -> E B G */
-    {1568, 350, 75}, {1568, 350, 75}, {1568, 350, 75},
-    {1319, 250, 50}, {1976, 150, 50}, {1568, 450, 150},
-    /* D D D -> E B G */
-    {2349, 350, 75}, {2349, 350, 75}, {2349, 350, 75},
-    {1319, 250, 50}, {1976, 150, 50}, {1568, 450, 150},
-    /* G G G -> F# F E -> E A C# C B B A B */
-    {3136, 350, 50}, {3136, 350, 50}, {3136, 350, 50},
-    {2960, 200, 30}, {2794, 200, 30}, {2637, 300, 50},
-    {2637, 150, 40}, {1760, 150, 40}, {2217, 250, 40}, {2093, 150, 40},
-    {1976, 150, 40}, {1976, 300, 40}, {1760, 150, 40}, {1976, 350, 120},
-    /* E B E -> G E B G */
-    {1319, 350, 50}, {1976, 150, 50}, {1319, 350, 50},
-    {1568, 350, 50}, {1319, 250, 50}, {1976, 150, 50}, {1568, 650, 0}
+    {392,460,40}, {392,460,40}, {392,460,40},
+    {311,345,30}, {466,115,10}, {392,460,40},
+    {311,345,30}, {466,115,10}, {392,460,540},
+    {587,460,40}, {587,460,40}, {587,460,40},
+    {622,345,30}, {466,115,10}, {392,460,40},
+    {311,345,30}, {466,115,10}, {392,460,540},
+    {784,460,40}, {392,345,30}, {392,115,10},
+    {784,460,40}, {740,345,30}, {698,115,10},
+    {659,115,10}, {622,115,10}, {659,220,530},
+    {415,220,30}, {554,460,40}, {523,345,30},
+    {494,115,10}, {466,115,10}, {440,115,10},
+    {466,220,530}, {311,220,30}, {370,460,40},
+    {311,345,30}, {466,115,10}, {392,460,40},
+    {311,345,30}, {466,115,10}, {392,960,40},
+};
+/* Power-on identification only: these notes do not signal flight readiness. */
+static const BenchNote bench_startup[] = {
+    {1047,80,40}, {1319,80,40}, {1568,140,100}, {2093,180,40}
 };
 #define BENCH_MARCH_NOTES (sizeof(bench_march) / sizeof(bench_march[0]))
 static volatile bool melody_active; /* Owner writes; console only gates DFU. */
 static uint32_t melody_started, melody_epoch, melody_slot;
 static AtlasStatus melody_status;
+static bool melody_startup;
+static uint32_t melody_track; /* 0 idle, 1 startup, 2 march */
+static const BenchNote *melody_notes = bench_march;
+static unsigned melody_count = BENCH_MARCH_NOTES;
 
 /** @brief Cancel playback in the sole TIM15 owner, including a silent gap. */
 static void bench_melody_stop(void)
@@ -137,6 +153,7 @@ static void bench_melody_stop(void)
     AtlasBuzzer_Stop(&bench_board->buzzer);
     melody_slot = UINT32_MAX;
     melody_active = false;
+    melody_startup = false;
 }
 
 /** @brief Advance by elapsed time without blocking or replaying overdue notes. */
@@ -145,18 +162,18 @@ static void bench_melody_service(void)
     if (!melody_active)
         return;
     AtlasUsbHealth usb;
-    if (watchdog_fault != 0U || melody_epoch != link_epoch ||
-        !AtlasUsb_GetHealth(&usb) || !usb.configured || !usb.dtr)
+    if (watchdog_fault != 0U || (!melody_startup && (melody_epoch != link_epoch ||
+        !AtlasUsb_GetHealth(&usb) || !usb.configured || !usb.dtr)))
     {
         bench_melody_stop();
         return;
     }
     const uint32_t elapsed = (uint32_t)(HAL_GetTick() - melody_started);
     uint32_t end = 0U;
-    for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
+    for (unsigned i = 0U; i < melody_count; ++i)
     {
-        const uint32_t tone_end = end + bench_march[i].tone_ms;
-        end = tone_end + bench_march[i].gap_ms;
+        const uint32_t tone_end = end + melody_notes[i].tone_ms;
+        end = tone_end + melody_notes[i].gap_ms;
         if (elapsed >= end)
             continue;
         const bool silent = elapsed >= tone_end;
@@ -168,7 +185,7 @@ static void bench_melody_service(void)
             if (!silent)
             {
                 melody_status = AtlasBuzzer_Beep(&bench_board->buzzer,
-                                                 bench_march[i].hz, tone_end - elapsed);
+                                                 melody_notes[i].hz, tone_end - elapsed);
                 if (melody_status != ATLAS_OK)
                     bench_melody_stop();
             }
@@ -184,6 +201,10 @@ static AtlasStatus bench_melody_start(void)
 {
     if (melody_active)
         return ATLAS_ERROR_BUSY;
+    melody_notes = bench_march;
+    melody_count = BENCH_MARCH_NOTES;
+    melody_startup = false;
+    melody_track = 2U;
     melody_status = ATLAS_OK;
     melody_started = HAL_GetTick();
     melody_epoch = link_epoch;
@@ -192,6 +213,20 @@ static AtlasStatus bench_melody_start(void)
     bench_melody_service();
     return melody_active ? melody_status :
            (melody_status == ATLAS_OK ? ATLAS_ERROR_STATE : melody_status);
+}
+
+/** @brief Exactly once from the sole TIM15 owner, even without a laptop. */
+static void bench_startup_start(void)
+{
+    melody_notes = bench_startup;
+    melody_count = sizeof(bench_startup) / sizeof(bench_startup[0]);
+    melody_startup = true;
+    melody_track = 1U;
+    melody_started = HAL_GetTick();
+    melody_slot = UINT32_MAX;
+    melody_status = ATLAS_OK;
+    melody_active = true;
+    bench_melody_service();
 }
 
 /** @brief Copy a bounded literal/result string with guaranteed termination.
@@ -230,6 +265,8 @@ static void bench_publish(void)
     working.buzzer_note = melody_active ? melody_slot / 2U + 1U : 0U;
     working.buzzer_hz = bench_board->buzzer.running ? bench_board->buzzer.frequency_hz : 0U;
     working.buzzer_status = (uint32_t)melody_status;
+    working.buzzer_notes = melody_count;
+    working.buzzer_track = melody_track;
     working.lsm_interrupts = bench_board->lsm6dsv16b.health.interrupt_count;
     working.ble_command = bench_board->ble.command_mode;
     working.ble_dtr = AtlasBle_IsDtrAsserted(&bench_board->ble);
@@ -453,6 +490,7 @@ static AtlasStatus bench_execute(const AtlasBenchCommand *command, BenchReply *r
 static void bench_owner_task(void *argument)
 {
     (void)argument;
+    bench_startup_start();
     for (;;)
     {
         bench_melody_service();
@@ -556,9 +594,23 @@ static void bench_hello(void)
     AtlasBench_JsonInit(&json, tx, sizeof(tx));
     /* Leading LF terminates any partial record left in the host on reconnect. */
     AtlasBench_JsonRaw(
-        &json, "\n{\"type\":\"hello\",\"profile\":\"bringup\",\"version\":\"" ATLAS_BRINGUP_VERSION
-               "\",\"pwm_pyro_inhibited\":true,\"led_inhibited\":true,\"software_dfu\":true,\"buzzer_melody\":true");
+        &json, "\n{\"type\":\"hello\",\"profile\":\"" ATLAS_BENCH_PROFILE "\",\"version\":\"" ATLAS_BRINGUP_VERSION
+               "\",\"pyro_inhibited\":true,\"led_inhibited\":true,\"software_dfu\":true,\"buzzer_melody\":true");
+#if ATLAS_SERVO_BENCH
+    AtlasBench_JsonRaw(&json, ",\"pwm_pyro_inhibited\":false,\"servo_test\":true");
+    bench_field(&json, "servo_pwm_max_mv", ATLAS_IO_SERVO_MAX_MV);
+    bench_field(&json, "servo_layout", ATLAS_IO_SERVO_LAYOUT);
+    AtlasBench_JsonRaw(&json, ",\"servo_direct\":true");
+    bench_field(&json, "servo_adc_samples", ATLAS_IO_SERVO_ADC_SAMPLES);
+#else
+    AtlasBench_JsonRaw(&json, ",\"pwm_pyro_inhibited\":true,\"servo_test\":false");
+#endif
     bench_field(&json, "schema", ATLAS_BENCH_SCHEMA);
+    bench_field(&json, "march_notes", (uint32_t)BENCH_MARCH_NOTES);
+    uint32_t duration_ms = 0U;
+    for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
+        duration_ms += bench_march[i].tone_ms + bench_march[i].gap_ms;
+    bench_field(&json, "march_ms", duration_ms);
     bench_field(&json, "clock_hz", SystemCoreClock);
     bench_field(&json, "device_id", DBGMCU->IDCODE);
     AtlasBench_JsonRaw(&json, ",\"uid\":[");
@@ -586,7 +638,7 @@ static void bench_status(void)
     (void)AtlasStorage_GetHealth(&sd);
     (void)AtlasUsb_GetHealth(&usb);
     AtlasBench_JsonInit(&j, tx, sizeof(tx));
-    AtlasBench_JsonRaw(&j, "{\"type\":\"status\",\"profile\":\"bringup\",\"inhibited\":true");
+    AtlasBench_JsonRaw(&j, "{\"type\":\"status\",\"profile\":\"" ATLAS_BENCH_PROFILE "\",\"inhibited\":true,\"pyro_inhibited\":true");
     bench_field(&j, "schema", ATLAS_BENCH_SCHEMA);
     bench_field(&j, "seq", ++frame_sequence);
     bench_field(&j, "ms", HAL_GetTick());
@@ -771,6 +823,9 @@ static void bench_status(void)
     bench_field(&j, "ref_stage", (uint32_t)io.reference_failure_stage);
     bench_field(&j, "ref_channel", io.reference_temperature_channel ? 1U : 0U);
     bench_field(&j, "ref_raw", io.reference_raw);
+    bench_field(&j, "ref_cal", io.reference_calibration);
+    bench_field(&j, "vref_raw", io.reference_vref_raw);
+    bench_field(&j, "ref_mv", io.reference_computed_mv);
     bench_field(&j, "ref_hal_status", io.reference_hal_status);
     bench_field(&j, "ref_hal_error", io.reference_hal_error);
     bench_field(&j, "reset_flags", io.reset_flags);
@@ -782,6 +837,24 @@ static void bench_status(void)
     bench_field(&j, "switch", io.external_switch ? 1U : 0U);
     bench_field(&j, "pwm", io.pwm_enabled_mask);
     bench_field(&j, "armed", io.pyro.software_armed ? 1U : 0U);
+    bench_field(&j, "t", io.published_at_ms);
+#if ATLAS_SERVO_BENCH
+    AtlasBench_JsonRaw(&j, "},\"servo\":{\"ready\":");
+    AtlasBench_JsonU32(&j, io.servo_ready ? 1U : 0U);
+    bench_field(&j, "remaining_ms", io.servo_remaining_ms);
+    bench_field(&j, "stop_reason", io.servo_stop_reason);
+    bench_field(&j, "stop_pwm_mv", io.servo_stop_pwm_mv);
+    bench_field(&j, "target_us", io.servo_target_us);
+    bench_field(&j, "min_us", io.servo_minimum_us);
+    bench_field(&j, "max_us", io.servo_maximum_us);
+    AtlasBench_JsonRaw(&j, ",\"pulse_us\":[");
+    for (unsigned i = 0U; i < ATLAS_IO_PWM_CHANNELS; ++i)
+    {
+        if (i != 0U) AtlasBench_JsonRaw(&j, ",");
+        AtlasBench_JsonU32(&j, io.commanded_pwm_us[i]);
+    }
+    AtlasBench_JsonRaw(&j, "]");
+#endif
     AtlasBench_JsonRaw(&j, "},\"led\":{\"commanded\":");
     AtlasBench_JsonU32(&j, b->led_commanded);
     bench_field(&j, "gates", b->led_gates);
@@ -790,7 +863,8 @@ static void bench_status(void)
     AtlasBench_JsonRaw(&j, "},\"buzzer\":{\"playing\":");
     AtlasBench_JsonU32(&j, b->buzzer_playing);
     bench_field(&j, "note", b->buzzer_note);
-    bench_field(&j, "notes", (uint32_t)BENCH_MARCH_NOTES);
+    bench_field(&j, "notes", b->buzzer_notes != 0U ? b->buzzer_notes : (uint32_t)BENCH_MARCH_NOTES);
+    bench_field(&j, "track", b->buzzer_track);
     bench_field(&j, "hz", b->buzzer_hz);
     bench_field(&j, "status", b->buzzer_status);
     AtlasBench_JsonRaw(&j, "},\"sd\":{\"start\":");
@@ -799,6 +873,10 @@ static void bench_status(void)
     bench_field(&j, "mounted", sd.mounted ? 1U : 0U);
     bench_field(&j, "status", sd.last_status);
     bench_field(&j, "fs", sd.filesystem_result);
+    bench_field(&j, "stage", sd.failure_stage);
+    bench_field(&j, "hal_status", sd.hal_status);
+    bench_field(&j, "hal_error", sd.hal_error);
+    bench_field(&j, "detect_edges", sd.detect_edges);
     bench_field(&j, "completed", sd.completed_requests);
     bench_field(&j, "errors", sd.errors);
     bench_field(&j, "time_valid", sd.time_valid ? 1U : 0U);
@@ -916,6 +994,19 @@ static void bench_dispatch(const AtlasBenchCommand *command)
         return;
     }
     last_id = command->id;
+    if (command->operation == ATLAS_BENCH_SERVO_STOP)
+    {
+#if ATLAS_SERVO_BENCH
+        /* OFF bypasses a busy worker, stale diagnostics and result backpressure.
+         * Queued enables/sets are fenced before this acknowledgement is made. */
+        AtlasIo_BenchServoStop();
+        bench_text(reply.detail, sizeof(reply.detail), "PWM pins deasserted; queued servo commands fenced");
+#else
+        reply.status = ATLAS_ERROR_UNSUPPORTED;
+#endif
+        bench_reply(&reply);
+        return;
+    }
     if (dfu_pending)
     {
         reply.status = ATLAS_ERROR_BUSY;
@@ -959,7 +1050,30 @@ static void bench_dispatch(const AtlasBenchCommand *command)
     }
     pending_id = command->id;
     pending_epoch = link_epoch;
-    if (command->operation == ATLAS_BENCH_GPIO)
+    if (command->operation == ATLAS_BENCH_SERVO_ENABLE || command->operation == ATLAS_BENCH_SERVO_SET)
+    {
+#if ATLAS_SERVO_BENCH
+        AtlasIoCommand request = {0};
+        if (command->operation == ATLAS_BENCH_SERVO_ENABLE)
+        {
+            request.type = ATLAS_IO_BENCH_SERVO_ENABLE;
+            request.arguments.servo.channel = (uint8_t)(command->argument[0] - 1U);
+            request.arguments.servo.minimum_us = (uint16_t)command->argument[1];
+            request.arguments.servo.maximum_us = (uint16_t)command->argument[2];
+        }
+        else
+        {
+            request.type = ATLAS_IO_BENCH_SERVO_SET;
+            request.arguments.pwm.channel = (uint8_t)(command->argument[0] - 1U);
+            request.arguments.pwm.pulse_us = (uint16_t)command->argument[1];
+        }
+        reply.status = AtlasIo_Submit(&request, &pending_ticket);
+        if (reply.status == ATLAS_OK) pending = BENCH_PENDING_GPIO;
+#else
+        reply.status = ATLAS_ERROR_UNSUPPORTED;
+#endif
+    }
+    else if (command->operation == ATLAS_BENCH_GPIO)
     {
         AtlasIoCommand request = {.type = ATLAS_IO_BENCH_GPIO};
         request.arguments.gpio.channel =
@@ -1058,9 +1172,14 @@ static void bench_results(void)
     if (AtlasIo_Receive(&io) && pending == BENCH_PENDING_GPIO && io.ticket == pending_ticket)
     {
         reply = (BenchReply){.id = pending_id, .epoch = pending_epoch, .status = io.status};
-        bench_text(reply.detail, sizeof(reply.detail),
-                   "logic GPIO request completed; any HIGH auto-clears after 1000 ms; verify "
-                   "pin/input electrically");
+        if (io.type == ATLAS_IO_BENCH_SERVO_ENABLE || io.type == ATLAS_IO_BENCH_SERVO_SET)
+            bench_text(reply.detail, sizeof(reply.detail), io.status == ATLAS_OK ?
+                       "servo position applied directly; 3 s idle / 30 s session limit" :
+                       "servo request rejected; inspect supply, session, limits and stop reason");
+        else
+            bench_text(reply.detail, sizeof(reply.detail),
+                       "logic GPIO request completed; any HIGH auto-clears after 1000 ms; verify "
+                       "pin/input electrically");
         pending = BENCH_PENDING_NONE;
         bench_reply(&reply);
     }
@@ -1101,6 +1220,7 @@ static void bench_console_task(void *argument)
         if (online != connected || usb.session != session)
         {
             ++link_epoch;
+            AtlasIo_BenchServoStop();
             connected = online;
             session = usb.session;
             last_id = 0U;

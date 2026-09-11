@@ -49,3 +49,8 @@ __pycache__/
 *.pyc
 .venv/
 /logs/
+
+# Clone-local bootstrap state
+.atlas-launch.log
+.atlas-setup.lock
+.venv.unusable-*/

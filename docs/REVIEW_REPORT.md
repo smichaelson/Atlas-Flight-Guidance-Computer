@@ -1,6 +1,8 @@
 # Atlas software review record
 
-The newest dashboard, software-DFU and 1.1.1 buzzer melody work is recorded in the [Ground Station review](GROUND_STATION_REVIEW.md), including three sequential review passes and physical tests still pending. It supersedes earlier stack-size/build-hash figures for the new images. The GNSS/ADC qualification findings below remain open.
+**Current correction:** [ServoBench 1.2.4 review](SERVO_FIX_REVIEW.md). The 1.2.2 voltage tests below missed a second cutoff in the full output loop. That defect was reproduced and corrected in 1.2.3; earlier acceptance statements do not establish sustained servo output.
+
+The September 11 diagnostic 1.2.1 update is recorded in the [Ground Station review](GROUND_STATION_REVIEW.md), including three sequential author reviews, ADC reference correction, SD/SW2 evidence, guarded ServoBench, audio, fresh-clone launch tests and real software DFU. ADC sampling and GNSS communication now work on the board; precision, antenna/fix/PPS and physical output qualification remain separate. That record supersedes the earlier pending-reflash and build-hash statements below, which are historical evidence.
 
 Latest update: 2026-09-04. The [GNSS/RGB follow-up](#2026-09-04-gnss-startup-and-rgb-hardware-inhibit-follow-up) records the newest board log, stale-UART startup correction, manual GNSS recovery, diagnostic telemetry, and confirmed Q6-Q8 hardware inhibit. It supersedes the provisional LED conclusion in the [earlier hardware follow-up](#2026-09-03-bno085-and-led-follow-up). The [PCB bring-up review](#pcb-bring-up-review) covers the diagnostic image, dashboard and startup procedure. Earlier build hashes/counts below are historical unless identified as latest. All source changes stay within the repository; the separate original Atlas folder is untouched.
 

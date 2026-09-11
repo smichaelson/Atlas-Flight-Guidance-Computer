@@ -39,6 +39,7 @@ void SD_PrepareMount(void) { authorized=true; }
 uint8_t BSP_SD_IsMediaCurrent(void) { return current?1U:0U; }
 uint8_t BSP_SD_GetCardState(void) { return current?SD_TRANSFER_OK:SD_TRANSFER_ERROR; }
 uint8_t BSP_SD_IsDetected(void) { return present?SD_PRESENT:SD_NOT_PRESENT; }
+void BSP_SD_GetDiagnostics(BSP_SD_Diagnostics *output) { *output=(BSP_SD_Diagnostics){0}; }
 FRESULT f_mount(FATFS *fs,const TCHAR *path,BYTE option)
 {
     assert(strcmp(path,"0:")==0);

@@ -69,13 +69,27 @@ def validate(frame: object) -> dict:
         raise ValueError("Expected an object")
     kind = frame.get("type")
     if kind == "hello":
-        if (frame.get("profile") != "bringup" or not _integer(frame.get("schema"), 1, 1) or
-                frame.get("pwm_pyro_inhibited") is not True or
+        profile_ok = ((frame.get("profile") == "bringup" and frame.get("pwm_pyro_inhibited") is True and
+                       frame.get("servo_test", False) is False) or
+                      (frame.get("profile") == "servo_bench" and frame.get("pwm_pyro_inhibited") is False and
+                       frame.get("pyro_inhibited") is True and frame.get("servo_test") is True))
+        if (not profile_ok or not _integer(frame.get("schema"), 1, 1) or
                 frame.get("led_inhibited") is not True or
                 not isinstance(frame.get("version"), str) or len(frame["version"]) > 32 or
                 not _array(frame.get("uid"), 3) or not _integer(frame.get("device_id")) or
                 not _integer(frame.get("clock_hz"), 1)):
             raise ValueError("Not a recognized inhibited Atlas bring-up image")
+        for key, maximum in (('march_notes',128),('march_ms',60000)):
+            if key in frame and not _integer(frame[key],1,maximum):
+                raise ValueError('Invalid melody metadata')
+        if 'servo_pwm_max_mv' in frame and (frame['profile'] != 'servo_bench' or
+                not _integer(frame['servo_pwm_max_mv'], 1, 30000)):
+            raise ValueError('Invalid servo voltage policy')
+        for key, maximum in (('servo_layout',255),('servo_slew_us_s',10000),('servo_adc_samples',1024)):
+            if key in frame and (frame['profile'] != 'servo_bench' or not _integer(frame[key],1,maximum)):
+                raise ValueError('Invalid servo motion capability')
+        if 'servo_direct' in frame and (frame['profile'] != 'servo_bench' or type(frame['servo_direct']) is not bool):
+            raise ValueError('Invalid direct servo motion capability')
     elif kind == "reply":
         if (not _integer(frame.get("id"), 1) or not _integer(frame.get("status"), 0, 13) or
                 not _integer(frame.get("verified_bytes")) or
@@ -86,7 +100,7 @@ def validate(frame: object) -> dict:
         if not isinstance(frame.get("reason"), str) or len(frame["reason"]) > 192:
             raise ValueError("Malformed target error")
     elif kind == "status":
-        if (frame.get("profile") != "bringup" or not _integer(frame.get("schema"), 1, 1) or
+        if (frame.get("profile") not in ("bringup", "servo_bench") or not _integer(frame.get("schema"), 1, 1) or
                 frame.get("inhibited") is not True):
             raise ValueError("Wrong status profile or missing inhibit")
         for key in ("seq", "ms", "owner_ms", "attempted", "pending_id", "service"):
@@ -184,7 +198,41 @@ def validate(frame: object) -> dict:
                 raise ValueError(f"Invalid {section}.{key}")
         if type(frame["power"].get("available")) is not bool:
             raise ValueError("Missing analog availability")
-        if frame["gpio"]["pwm"] or frame["gpio"]["armed"]:
+        if (not _integer(frame['gpio']['switch'], 0, 1) or not _integer(frame['gpio']['inputs'], 0, 127) or
+                ('t' in frame['gpio'] and not _integer(frame['gpio']['t']))):
+            raise ValueError("Invalid digital inputs")
+        for key in ('ref_cal', 'vref_raw', 'ref_mv'):
+            if key in frame['power'] and not _integer(frame['power'][key]):
+                raise ValueError("Invalid ADC reference evidence")
+        for key, maximum in (('stage', 7), ('hal_status', 3), ('hal_error', 0xFFFFFFFF), ('detect_edges', 0xFFFFFFFF)):
+            if key in frame['sd'] and not _integer(frame['sd'][key], 0, maximum):
+                raise ValueError("Invalid SD controller diagnostics")
+        if frame['profile'] == 'servo_bench':
+            servo, mask = frame.get('servo'), frame['gpio']['pwm']
+            if (frame.get('pyro_inhibited') is not True or not _integer(mask, 0, 255) or
+                    mask & (mask - 1) or not isinstance(servo, dict) or
+                    not _integer(servo.get('ready'), 0, 1) or
+                    not _integer(servo.get('remaining_ms'), 0, 3000) or
+                    not _integer(servo.get('stop_reason'), 0, 5) or
+                    not _integer(servo.get('min_us'), 0, 1519) or
+                    not _integer(servo.get('max_us'), 0, 2100) or
+                    not _array(servo.get('pulse_us'), 8)):
+                raise ValueError('Invalid ServoBench state')
+            if 'target_us' in servo:
+                target=servo['target_us']
+                if (not _integer(target,0,2100) or (mask and not servo['min_us'] <= target <= servo['max_us']) or
+                        (not mask and target != 0)):
+                    raise ValueError('Invalid servo target')
+            if 'stop_pwm_mv' in servo and not _integer(servo['stop_pwm_mv']):
+                raise ValueError('Invalid servo cutoff sample')
+            for i, pulse in enumerate(servo['pulse_us']):
+                if mask & (1 << i):
+                    if not (900 <= servo['min_us'] < 1520 < servo['max_us'] <= 2100 and
+                            servo['min_us'] <= pulse <= servo['max_us']):
+                        raise ValueError('Servo pulse exceeds enabled limits')
+                elif pulse != 0:
+                    raise ValueError('Disabled channel reports a PWM command')
+        if (frame['profile'] == 'bringup' and frame["gpio"]["pwm"]) or frame["gpio"]["armed"]:
             raise ValueError("Unexpected enabled PWM/armed pyro in bring-up image")
     else:
         raise ValueError("Unknown message type")
@@ -242,6 +290,13 @@ def valid_command(verb: str) -> bool:
         return all(int(value) <= 0xFFFFFFFF for value in verb.split()[1:])
     if verb == "led 0" or re.fullmatch(r"gpio [0-7]", verb):
         return True
+    if verb == 'servo stop':
+        return True
+    if re.fullmatch(r'servo enable [1-8] [0-9]{3,4} [0-9]{4}', verb):
+        _, _, _, minimum, maximum = verb.split()
+        return 900 <= int(minimum) < 1520 < int(maximum) <= 2100
+    if re.fullmatch(r'servo set [1-8] [0-9]{3,4}', verb):
+        return 900 <= int(verb.split()[3]) <= 2100
     if re.fullmatch(r"i2c [0-9]{1,3} [0-9]{1,3}", verb):
         _, address, register = verb.split()
         return 8 <= int(address) <= 119 and int(register) <= 255
@@ -281,11 +336,13 @@ class Session:
         """@brief Apply a validated frame. @param now Monotonic laptop seconds."""
         validate(frame)
         if frame["type"] == "hello":
-            if self.hello and self.hello["uid"] != frame["uid"]:
+            if self.hello and (self.hello["uid"] != frame["uid"] or self.hello['profile'] != frame['profile']):
                 self.blocked = "Device identity changed; disconnect and inspect."
             else:
                 self.hello = frame
         elif frame["type"] == "status" and self.hello:
+            if frame['profile'] != self.hello['profile']:
+                self.blocked = 'Telemetry profile changed; disconnect and inspect.'
             if self.status and (frame["usb"]["session"] != self.status["usb"]["session"] or
                                 ((frame["ms"] - self.status["ms"]) & 0xFFFFFFFF) >= 0x80000000):
                 self.blocked = "MCU/session restarted; command outcome may be unknown. Reconnect manually."
@@ -318,6 +375,18 @@ class Session:
         self.check_timeout(now)
         if not valid_command(verb):
             raise ValueError("Command is not in the diagnostic allowlist")
+        servo = verb.startswith('servo ')
+        if servo and (not self.hello or self.hello.get('profile') != 'servo_bench' or
+                      self.hello.get('servo_test') is not True):
+            raise ValueError('Install the separate ServoBench firmware to use servo tests')
+        if verb == 'servo stop':
+            # OFF must remain available with stale telemetry or an outstanding command.
+            # Firmware deasserts pins synchronously and fences older queued commands.
+            if self.next_id > 0xFFFFFFFF:
+                raise ValueError('Command IDs exhausted; disconnect to stop PWM')
+            self.pending = Pending(self.next_id, verb, now)
+            self.next_id += 1
+            return f'{self.pending.identifier} {verb}\n'.encode('ascii')
         if self.blocked or self.pending:
             raise ValueError(self.blocked or "Wait for the current command; no queued/repeated actions")
         if verb not in {"hello", "status"}:
@@ -327,6 +396,22 @@ class Session:
                 raise ValueError("MCU still has an outstanding operation; wait for it to finish")
         if self.next_id > 0xFFFFFFFF:
             raise ValueError("Command IDs exhausted; reconnect manually")
+        if self.status and self.status['gpio']['pwm'] and verb not in ('hello', 'status') and not verb.startswith('servo set '):
+            raise ValueError('Stop the servo before another bench operation')
+        if servo:
+            s = self.status
+            if (self.hello.get('servo_pwm_max_mv') != 8550 or self.hello.get('servo_layout') != 1 or
+                    self.hello.get('servo_direct') is not True or self.hello.get('servo_adc_samples') != 16 or 'target_us' not in s['servo']):
+                raise ValueError('Update to ServoBench 1.2.5 for direct position moves, PCB numbering and the 8.55 V cutoff')
+            if (now - self.received_at > 1.0 or not s['servo']['ready'] or s['power']['status'] or not s['power']['available'] or
+                    age_ms(s['ms'], s['power']['t']) > 100 or not s['power']['valid'] & 0x2 or
+                    not 0 < s['power']['mv'][1] <= 8550):
+                raise ValueError('Servo blocked: need a usable PWM-supply ADC reading above zero and at or below 8.55 V')
+            parts = verb.split()
+            if parts[1] == 'set':
+                channel, pulse = int(parts[2]), int(parts[3])
+                if s['gpio']['pwm'] != 1 << (channel-1) or not s['servo']['min_us'] <= pulse <= s['servo']['max_us']:
+                    raise ValueError('Enable this channel first and stay within its limits')
         if verb == "march":
             if self.hello.get("buzzer_melody") is not True or "buzzer" not in self.status:
                 raise ValueError("Install Bringup 1.1.1 or later for buzzer melody playback")
@@ -336,7 +421,7 @@ class Session:
             if (self.hello.get("software_dfu") is not True or
                     [int(v) for v in verb.split()[1:]] != self.hello["uid"]):
                 raise ValueError("Firmware does not advertise software DFU for this UID")
-            if (self.status["sd"]["mounted"] or self.status["gpio"]["outputs"] or
+            if (self.status["sd"]["mounted"] or self.status["gpio"]["outputs"] or self.status['gpio']['pwm'] or
                     self.status["tasks"]["busy"] or self.status.get("buzzer", {}).get("playing")):
                 raise ValueError("Unmount SD and stop playback; wait for all tests and GPIO pulses to finish")
         self.pending = Pending(self.next_id, verb, now)

@@ -80,6 +80,9 @@ static AtlasStatus atlas_buzzer_configure(AtlasBuzzer *buzzer,
     {
         return ATLAS_ERROR_IO;
     }
+    /* ARR and both compares are preloaded. Latch them together while both
+     * outputs are disabled, before starting the new note's first period. */
+    buzzer->timer->Instance->EGR = TIM_EGR_UG;
     buzzer->frequency_hz = timer_tick_hz / counts;
     return ATLAS_OK;
 }

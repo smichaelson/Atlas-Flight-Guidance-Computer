@@ -71,6 +71,7 @@ typedef struct
     uint8_t filesystem_result;
     uint32_t completed_requests;
     uint32_t errors;
+    uint32_t failure_stage, hal_status, hal_error, detect_edges;
     uint32_t stack_free_words;
     AtlasUtc utc;
     uint32_t utc_sampled_at_ms;

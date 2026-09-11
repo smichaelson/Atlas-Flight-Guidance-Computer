@@ -2,7 +2,7 @@
 
 Purpose: take an **assembled STM32H743ZIT6 Atlas board** from unpowered inspection to measured, logged peripheral operation. This is the dedicated bench procedure; you do not need to read ten device guides first.
 
-Major functions covered: build the inhibited diagnostic image; enter STM32 factory USB DFU; program and verify flash; connect the local dashboard; test power, GPIO, buzzer, sensors, RTC, SD, BLE and GNSS; diagnose failures; preserve evidence. Optional external-bus/radio tests come last. **RGB, PWM and pyro actuation are unavailable in this image; the confirmed rev-0.1 Q6-Q8 LED defect is held low in software.**
+Major functions covered: build the inhibited diagnostic image; enter STM32 factory USB DFU; program and verify flash; connect the local dashboard; test power, GPIO, buzzer, sensors, RTC, SD, BLE and GNSS; diagnose failures; preserve evidence. Optional external-bus/radio tests come last. **RGB, PWM and pyro actuation are unavailable in the ordinary Bringup image; the confirmed rev-0.1 Q6-Q8 LED defect is held low in software.** The separate 1.2.1 [ServoBench procedure](SERVO_BENCH.md) adds reviewed manual servo PWM only after measured supply and free-motion checks; it is not the default procedure below.
 
 The software has build/model-test evidence, not measurements from your PCB. Stop at an unmet physical gate. A responding sensor, a green row, or an `OK` reply is not electrical, calibration, deployment or flight qualification.
 
@@ -176,7 +176,7 @@ From the repository root:
 ```
 
 1. Select **Refresh ports**, choose the Atlas application's COM port explicitly, then **Connect**. No port opens automatically. Only one terminal/dashboard may own it.
-2. Opening asserts CDC DTR and should produce a schema-1 `hello`: profile `bringup`, version `1.0.2`, both `pwm_pyro_inhibited:true` and `led_inhibited:true`, device UID and nominal CPU 200 MHz. The updated dashboard rejects an older image that can still command RGB high. **Identify** requests the handshake again. Never proceed on an unrecognized profile. `hello`/`status` requests exercise both USB directions without probing sensors.
+2. Opening asserts CDC DTR and should produce a schema-1 `hello`: profile `bringup`, version `1.2.1` (or the verified installed diagnostic version), both `pwm_pyro_inhibited:true` and `led_inhibited:true`, device UID and nominal CPU 200 MHz. The updated dashboard rejects an older image that can still command RGB high. **Identify** requests the handshake again. Never proceed on an unrecognized profile. `hello`/`status` requests exercise both USB directions without probing sensors.
 3. The status stream is nominally 2 Hz. Initially the sensor rows should be NOT TESTED; analog/input monitoring is already running. Lack of GPS fix, missing radio/card, and unprobed devices are not startup failure by themselves.
 4. Tick the power/load checklist only after the physical steps above. Buttons issue one operation at a time. ADXL, LSM, MMC, barometer, BNO, BLE and radio probes are permitted **once per MCU boot**, including a failed attempt. GNSS is the sole exception: after a completed failure, another explicit click safely stops/flushes its UART and retries; if identity passed but RAM configuration failed, only configuration is retried. There is no automatic retry or replay.
 5. In **Raw evidence & notes**, start a **new** log if desired. Logging never overwrites a file and stops at 100 MiB or a disk error. Logs include UID, UTC and GNSS position: keep them private and out of Git. Enter DMM, scope and peer observations as bench notes. Starting a log late does not recover earlier frames.
@@ -190,6 +190,7 @@ Host telemetry older than 2.5 s is stale; commands that change device state requ
 ### A. Power, USB, inhibited RGB, buzzer and inputs
 
 - Watch `power.count` and timestamps advance with valid channels. Compare reported 3V3/PWM/5V/VIN_PROT against the DMM; record both and resolve divider/reference error rather than treating ADC output as the standard. `vdda_mv` and die temperature must be plausible. AUX 3V3 and auxiliary connector outputs still require their own meter checks; there is no separate AUX ADC rank.
+- Version 1.2.1 fixes the H743 16-bit factory/live VREF scaling and adds `ref_cal`, `vref_raw`, `ref_mv` for independent calculation. Do not use the vendor macro that rescales the live reading to 12 bits while leaving factory calibration at 16 bits.
 - Stop this acceptance section if `power.status` is nonzero or `power.count` remains zero. The 2026-09-04 version 1.0.1 evidence has exactly that separate fault (`status=IO`, zero samples, zero external-ADC errors); it does not prove bad rails and must not be conflated with the GNSS failure. Version 1.0.2 deliberately leaves all ADC conversion and acceptance policy unchanged, but adds the retained `ref_stage`, `ref_channel`, `ref_raw`, `ref_hal_status`, and `ref_hal_error` fields below. Preserve the complete new frame and DMM values before power-cycle or code changes.
 - The ten ADC channels are ordered **3V3, PWM supply, 5V, VIN_PROT, ARM supply, continuity 1, 2, 3, 4, 5**. `valid` bit *i* qualifies `mv[i]`. Zero voltage is not proof of an open lead or absence of a short. With J5 open, continuity/arm qualification remains unknown and no firing inference is permitted.
 - Do **not** attempt to illuminate D5. The raw-design review confirmed that each DMN3404L Q6-Q8 footprint routes the intended load/control/ground to the wrong physical gate/source/drain terminals. Require `led.inhibited=1`, `led.commanded=0`, and normally `led.gates=0`. Measure PB6/PB7/PD14 only to confirm they remain near 0 V through startup and later commands; never command or manually force them high. See the [hardware-inhibited LED guide](reference/modules/LED.md).
@@ -328,7 +329,7 @@ With both boards powered safely, `probe radio` starts its 115200 8N1 UART transp
 
 ### PWM and pyro remain deferred
 
-There is no PWM-enable, pyro-arm, fire, raw-memory or arbitrary-pin command. `ATLAS_BRINGUP=1` also rejects the normal actuator/configuration APIs and never invokes the control-algorithm hook. Do not try to turn this into an actuator test by editing one inhibit constant or attaching loads while in ROM DFU.
+Ordinary Bringup has no PWM-enable, pyro-arm, fire, raw-memory or arbitrary-pin command. The separately built 1.2.1 [ServoBench image](SERVO_BENCH.md) adds only bounded manual servo commands; pyro remains inhibited. `ATLAS_BRINGUP=1` also rejects the normal actuator/configuration APIs and never invokes the control-algorithm hook. Do not try to turn this into an actuator test by editing one inhibit constant or attaching loads while in ROM DFU.
 
 The normal firmware has [qualified output services](PERIPHERALS.md#output-configuration-and-qualification), but using them requires a **separate reviewed inert test application/plan**: scope all eight PWM outputs with measured KST neutral/travel and supply margin; then validate pyro channels with non-energetic fixtures, qualified ADC thresholds, physical-link transitions, 500 ms ON, ≥500 ms OFF, four-attempt ceiling, disarm/reset/stall/brownout behavior and independent cutoff assessment. Only after those gates may a responsible owner authorize real loads. Initial board bring-up does not satisfy them.
 
@@ -381,7 +382,7 @@ Only send the next line after the previous reply; the snippet is not a batch scr
 | `hello`, `status` | Read-only identification/ack; full status is streamed periodically |
 | `probe adxl/lsm/mmc/baro/bno/gnss/ble/radio` | Choose one literal module name. Only a completed failed GNSS probe may be explicitly retried |
 | `led 0`, `beep`, `stop` | Explicit RGB-low request; 200 ms nominal beep; stop buzzer and force RGB low. Nonzero LED masks are rejected |
-| `march` | Bringup 1.1.1+: play the owner's 33-note sequence once without blocking sensor polling; `stop` cancels. See [melody controls](GROUND_STATION.md#play-the-buzzer-melody) |
+| `march` | Bringup 1.1.1+: play a fixed melody once without blocking sensor polling; `stop` cancels. Version 1.2.1 revises it to 39 notes / 15.5 s. See [melody controls](GROUND_STATION.md#play-the-buzzer-melody) |
 | `gpio 1..7`, `gpio 0` | One logic-only 1 s HIGH; or all logic outputs LOW |
 | `sd mount/read/test/unmount` | Choose one operation; fixed safe fixture names |
 | `utc YYYY M D h m s` | Explicit Gregorian UTC, years 2000–2099 |

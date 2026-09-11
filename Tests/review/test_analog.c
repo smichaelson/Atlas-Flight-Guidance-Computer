@@ -8,6 +8,16 @@
 /** @brief Execute conversion boundary checks. @return Zero if assertions pass. */
 int main(void)
 {
+    /* Factory and live samples are BOTH 16-bit on STM32H743. The vendor LL
+     * macro divides the live sample by 16; exercising that mock hid the bug. */
+    assert(AtlasAnalog_VddaFromReference16(24000U, 24000U) == 3300U);
+    assert(AtlasAnalog_VddaFromReference16(23860U, 24000U) == 3319U);
+    assert(AtlasAnalog_VddaFromReference16(20000U, 24000U) == 3960U);
+    assert(AtlasAnalog_VddaFromReference16(0U, 24000U) == 0U);
+    assert(AtlasAnalog_VddaFromReference16(65536U, 24000U) == 0U);
+    assert(AtlasAnalog_VddaFromReference16(24000U, 0U) == 0U);
+    assert(AtlasAnalog_VddaFromReference16(24000U, UINT16_MAX) == 0U);
+    assert(AtlasAnalog_VddaFromReference16(1U, 65534U) == 216262200U);
     AtlasAnalogSample sample = {0};
     uint16_t raw[ATLAS_ANALOG_CHANNELS] = {0};
     for (size_t i = 0; i < ATLAS_ANALOG_CHANNELS; ++i) raw[i] = 32768U;

@@ -96,3 +96,7 @@ The current consolidation replaces the former root standards and separate buildi
 | Six separate reviews / review index | [Single historical archive](../archive/REVIEW_HISTORY.md) |
 
 The six earlier reviews and the complete pre-correction codebase review are retained as historical records, with supersession warnings and rebased links. Their old pass conclusions and build figures are not current acceptance. The complete pre-consolidation tree remains recoverable from Git commit `0dbc245`; a separate baseline archive was also retained outside the repository during this work.
+
+## Offline Windows dashboard dependency
+
+The 1.2.1 launcher bundles the unmodified [pyserial 3.5 wheel](https://pypi.org/project/pyserial/3.5/) in [tools/bringup/vendor](../../tools/bringup/vendor/README.md). SHA-256: `c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0`. The wheel includes its BSD license; bootstrap verifies the hash before installing into a clone-local environment with no package-index access. Python itself and firmware build tools are separately installed. No vendor ADC header was modified for the reference-scaling fix; that correction lives in AtlasAnalog with direct production-helper tests.

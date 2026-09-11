@@ -6,6 +6,19 @@
 #include "atlas_analog.h"
 #include <stddef.h>
 
+/** @brief Convert matching H743 16-bit VREF counts without the LL resolution shift.
+ * @param raw Unshifted live ADC3 count. @param factory_cal 3300 mV factory count.
+ * @return Rounded VDDA in mV, or zero when the input/calibration is invalid. */
+uint32_t AtlasAnalog_VddaFromReference16(uint32_t raw, uint16_t factory_cal)
+{
+    if (raw == 0U || raw > UINT16_MAX || factory_cal == 0U || factory_cal == UINT16_MAX)
+        return 0U;
+    /* STM32H743 factory VREFINT_CAL and ADC3 are both 16-bit at 3.3 V.
+     * The bundled H7 LL helper instead shifts the live value down to 12 bits;
+     * do not apply that helper or change the measured data to accommodate it. */
+    return (uint32_t)(((uint64_t)factory_cal * 3300U + raw / 2U) / raw);
+}
+
 /** @brief Convert counts through the verified dividers. @param sample Destination.
  * @param raw Counts. @param vdda_mv Measured reference. @param reference_valid Freshness. */
 void AtlasAnalog_Convert(AtlasAnalogSample *sample, const uint16_t raw[ATLAS_ANALOG_CHANNELS],

@@ -2,13 +2,13 @@
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),assert=require('node:assert/strict');
 const elements=new Map();
 function element(id){if(!elements.has(id))elements.set(id,{disabled:false,textContent:''});return elements.get(id);}
-const context=vm.createContext({document:{querySelector:()=>({content:'inert-token'}),
+const context=vm.createContext({window:{},document:{querySelector:()=>({content:'inert-token'}),
   getElementById:element,querySelectorAll:()=>['march-button','beep','stop'].map(element)}});
 const source=fs.readFileSync(path.join(__dirname,'../../tools/bringup/web/app.js'),'utf8').split("document.addEventListener('click'")[0];
 vm.runInContext(source,context);
 const fixture={mode:'live',fresh:true,blocked:'',pending:null,batch:[],updating:false,
   hello:{version:'1.1.1',buzzer_melody:true,software_dfu:true},firmware:{state:'checked'},
-  status:{sd:{},buzzer:{playing:0,note:0,notes:33,hz:0,status:0}}};
+  status:{sd:{},power:{available:false},gpio:{pwm:0},buzzer:{playing:0,note:0,notes:33,hz:0,status:0}}};
 function render(edit=''){
   vm.runInContext(`currentView='tests';state=${JSON.stringify(fixture)};${edit};render(state);`,context);
 }

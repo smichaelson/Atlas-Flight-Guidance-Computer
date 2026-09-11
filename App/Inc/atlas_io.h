@@ -25,10 +25,17 @@
 #define ATLAS_IO_QUEUE_CAPACITY (8U)
 #define ATLAS_IO_COMMAND_MAX_AGE_MS (50U)
 #define ATLAS_IO_BENCH_GPIO_MS (1000U)
+#define ATLAS_IO_SERVO_IDLE_MS (3000U)
+#define ATLAS_IO_SERVO_SESSION_MS (30000U)
+/* Owner-selected bench cutoff; this does not change the KST 8.4 V rating. */
+#define ATLAS_IO_SERVO_MAX_MV (8550U)
+#define ATLAS_IO_SERVO_LAYOUT (1U) /* Rev-0.1 physical labels: right 1 .. left 8. */
+#define ATLAS_IO_SERVO_ADC_SAMPLES (16U)
 /** @brief Exclusively transferred peripheral handles; TIM2 remains shared by GNSS/BNO. */
 typedef struct
 {
     ADC_HandleTypeDef *adc_external, *adc_internal;
+    /* Handle names follow schematic nets; API channel numbers follow PCB labels. */
     TIM_HandleTypeDef *pwm_1_to_4, *pwm_5_to_8, *pyro_timer;
     DMA_HandleTypeDef *pyro_dma;
 } AtlasIoHardware;
@@ -51,7 +58,8 @@ typedef enum
     ATLAS_IO_CONFIGURE = 0, ATLAS_IO_PWM_ENABLE, ATLAS_IO_PWM_SET,
     ATLAS_IO_PWM_DISABLE, ATLAS_IO_GPIO_SET, ATLAS_IO_PYRO_ARM,
     ATLAS_IO_PYRO_DISARM, ATLAS_IO_PYRO_REQUEST,
-    ATLAS_IO_BENCH_GPIO /* Diagnostic image only, fixed 1 s logic-level pulse. */
+    ATLAS_IO_BENCH_GPIO, /* Diagnostic image only, fixed 1 s logic-level pulse. */
+    ATLAS_IO_BENCH_SERVO_ENABLE, ATLAS_IO_BENCH_SERVO_SET /* ServoBench only. */
 } AtlasIoCommandType;
 /** @brief Completely copied command; channels are ZERO-BASED, masks use bit 0 for connector 1. */
 typedef struct
@@ -61,6 +69,7 @@ typedef struct
     {
         AtlasOutputConfiguration configuration;
         struct { uint8_t channel; uint16_t pulse_us; } pwm;
+        struct { uint8_t channel; uint16_t minimum_us, maximum_us; } servo;
         struct { uint8_t channel; bool high; } gpio;
         uint8_t channel_mask;
         uint8_t pyro_channel;
@@ -93,11 +102,15 @@ typedef struct
     uint32_t stack_free_words, reset_flags, last_ticket;
     uint32_t power_events, ecc_events, ecc_monitor_register, ecc_failing_word, ecc_error_code;
     uint32_t reference_raw, reference_hal_status, reference_hal_error;
+    uint32_t reference_calibration, reference_vref_raw, reference_computed_mv;
+    uint32_t servo_remaining_ms, servo_stop_reason, servo_stop_pwm_mv;
+    uint16_t servo_minimum_us, servo_maximum_us, servo_target_us;
     AtlasIoReferenceFailureStage reference_failure_stage;
     AtlasStatus status, last_command_status;
     uint8_t gpio_inputs, gpio_commanded_high, pwm_enabled_mask;
     bool reference_temperature_channel;
     bool external_switch, arm_supply_present, configured, emergency_latched;
+    bool servo_ready;
 } AtlasIoSnapshot;
 /** @brief Initialize private DMA memory/calibration, then create the static owner.
  * @param hardware Initialized generated handles copied by value.
@@ -120,6 +133,10 @@ bool AtlasIo_GetSnapshot(AtlasIoSnapshot *snapshot);
  *       A queued DISARM is not this emergency path. External energy isolation is
  *       still required; firmware cannot protect against all hardware failures. */
 void AtlasIo_EmergencyStop(void);
+/** @brief ServoBench-only immediate PWM deassertion and queued-command fence.
+ * Task/ISR safe, register-only; does not rearm after faults or affect pyro policy.
+ * The owner publishes the stopped state on its next 5 ms cycle. */
+void AtlasIo_BenchServoStop(void);
 /** @brief Internal board IRQ adapter for the additional D0TCM ECC monitor; no RTOS calls. */
 void AtlasIo_HandleDtcm0Irq(void);
 #endif
