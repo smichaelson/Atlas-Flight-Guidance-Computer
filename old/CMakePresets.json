@@ -1,0 +1,82 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "default",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
+            "cacheVariables": {}
+        },
+        {
+            "name": "ServoBench",
+            "displayName": "Atlas servo bench (PYRO INHIBITED)",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ATLAS_BRINGUP": "ON",
+                "ATLAS_SERVO_BENCH": "ON"
+            }
+        },
+        {
+            "name": "Bringup",
+            "displayName": "Atlas PCB bring-up (NO PWM/PYRO)",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ATLAS_BRINGUP": "ON",
+                "ATLAS_SERVO_BENCH": "OFF"
+            }
+        },
+        {
+            "name": "BringupRelease",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "ATLAS_BRINGUP": "ON",
+                "ATLAS_SERVO_BENCH": "OFF"
+            }
+        },
+        {
+            "name": "Debug",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ATLAS_BRINGUP": "OFF",
+                "ATLAS_SERVO_BENCH": "OFF"
+            }
+        },
+        {
+            "name": "Release",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "ATLAS_BRINGUP": "OFF",
+                "ATLAS_SERVO_BENCH": "OFF"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "ServoBench",
+            "configurePreset": "ServoBench"
+        },
+        {
+            "name": "Bringup",
+            "configurePreset": "Bringup"
+        },
+        {
+            "name": "BringupRelease",
+            "configurePreset": "BringupRelease"
+        },
+        {
+            "name": "Debug",
+            "configurePreset": "Debug"
+        },
+        {
+            "name": "Release",
+            "configurePreset": "Release"
+        }
+    ]
+}

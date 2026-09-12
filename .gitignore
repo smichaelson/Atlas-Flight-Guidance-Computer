@@ -54,3 +54,5 @@ __pycache__/
 .atlas-launch.log
 .atlas-setup.lock
 .venv.unusable-*/
+
+.project/
