@@ -1,3 +1,8 @@
+This branch will contain all of the final flight computer software. It currently consists of older
+pre-generated code, which will be updated with a new folder structure and documentation.
+
+*****
+
 # Atlas Flight Guidance Computer
 
 Atlas is a collaborative STM32H743 flight-computer development project for the Rev. 0.1 board. It provides sensor and communications drivers, a statically allocated FreeRTOS framework, owned peripheral services, build projects, and reviewed hardware exports.
