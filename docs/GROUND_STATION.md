@@ -1,5 +1,7 @@
 # Atlas Ground Station and USB updates
 
+Version 1.2.6 adds **Happy Birthday** beside Imperial March in Test controls. It plays once for 12 seconds, with the same Stop control and live playback status. Both diagnostic firmware profiles support it; older firmware keeps the new button disabled. See the [three-pass melody review](BIRTHDAY_REVIEW.md).
+
 Version 1.2.5 applies each selected servo angle directly, using the servo’s own position controller. The dashboard offers angle buttons and numeric entry across nominal ±50°. It retains the corrected PCB PWM numbering (right 1 to left 8), 16-sample ADC averaging and 8.55 V output-loop cutoff. See the [servo review](SERVO_FIX_REVIEW.md). Version 1.2.2 added the owner-selected 8.55 V ServoBench cutoff and repairs the march transition. It retains the 1.2.1 work that corrects the ADC reference scaling, exposes SW2 and SD diagnostics, adds startup audio, and provides a separate ServoBench image for manual KST X10 tests. Atlas uses battery power; USB-C carries data. Follow the board inspection and power requirements in [startup](startup.md), including the 16.3 V input limit and mandatory RGB inhibit. Keep J5 open and pyro loads disconnected. Servos stay disconnected until the [servo bench procedure](SERVO_BENCH.md) is satisfied.
 
 ## Start the dashboard
@@ -55,7 +57,9 @@ Startup plays four rising notes once after the buzzer owner starts, even without
 
 **Test controls → Indicators & logic → Imperial March** plays a single 42-note arrangement, 16.5 seconds. Version 1.2.2 restores the high-G repeat and short E–E♭–E turn in the bridge beginning at note 19, corrects the later B♭ landing, and places both opening phrases on four-second boundaries at 120 beats/minute. The closing phrase starts at 13.25 seconds with E♭–F♯–E♭–B♭ before returning to G; this is the owner's accepted Preview C. The owner's preferred lower octave is retained: 311–784 Hz, with a 300 Hz driver minimum. This remains an adaptation of the owner's supplied rough phrases. Timer reload and compares latch together before each tone starts. Firmware 1.1.1 reports its older 33-note/11.36-second sequence.
 
-**Stop indicators** cancels the melody. USB/DTR loss, a changed session, fault or a new sensor/link command cancels it; there is no replay queue. Polling continues while it plays and late service skips elapsed notes. Firmware update is refused during audio. Status shows MCU playback progress; actual pitch, loudness and differential waveform still require acoustic/scope acceptance.
+**Test controls → Indicators & logic → Happy Birthday** requires firmware 1.2.6 and plays the traditional 25-note tune once: C major, 120 beats/minute, 12 seconds, 392–784 Hz. The status names the active song and shows its note count. Both melody buttons are unavailable during playback or active servo PWM; another song is never queued.
+
+**Stop indicators** cancels either melody. USB/DTR loss, a changed session, fault or a new sensor/link command cancels it; there is no replay queue. Polling continues while it plays and late service skips elapsed notes. Firmware update is refused during audio. Status shows MCU playback progress; actual pitch, loudness and differential waveform still require acoustic/scope acceptance.
 
 ## Build and first installation
 

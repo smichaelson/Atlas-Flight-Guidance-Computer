@@ -162,8 +162,8 @@ static void test_march(void)
     /* Full timeline crosses HAL tick wrap, including every audible/rest boundary. */
     const uint32_t began = UINT32_MAX - 100U;
     test_tick = began;
-    assert(bench_melody_start() == ATLAS_OK && melody_active);
-    assert(bench_melody_start() == ATLAS_ERROR_BUSY && tone_requests == 1U);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_OK && melody_active);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_ERROR_BUSY && tone_requests == 1U);
     assert(!bench_dfu_ready());
     uint32_t offset = 0U;
     for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
@@ -187,7 +187,7 @@ static void test_march(void)
 
     /* Irregular service cannot accumulate tempo drift or drop a short note. */
     const unsigned before_jitter=tone_requests;
-    assert(bench_melody_start()==ATLAS_OK);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH)==ATLAS_OK);
     const uint32_t jitter_start=test_tick;
     const uint32_t steps[]={2U,3U,5U,7U,11U,17U,3U};
     for(unsigned step=0U;(uint32_t)(test_tick-jitter_start)<total;++step)
@@ -197,7 +197,7 @@ static void test_march(void)
     }
     assert(!melody_active && tone_requests==before_jitter+42U);
 
-    assert(bench_melody_start() == ATLAS_OK);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_OK);
     const unsigned before = tone_requests;
     test_tick += 1100U; /* Skip the second note; shorten the third to its remaining time. */
     bench_melody_service();
@@ -206,20 +206,20 @@ static void test_march(void)
     bench_melody_service();
     assert(!melody_active && !board.buzzer.running && tone_requests == before + 1U);
 
-    assert(bench_melody_start() == ATLAS_OK);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_OK);
     bench_melody_stop();
     bench_melody_service();
     assert(!melody_active && !board.buzzer.running);
-    assert(bench_melody_start() == ATLAS_OK);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_OK);
     test_usb.dtr = false;
     bench_melody_service();
     assert(!melody_active && !board.buzzer.running);
     test_usb.dtr = true;
-    assert(bench_melody_start() == ATLAS_OK);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_OK);
     ++link_epoch;
     bench_melody_service();
     assert(!melody_active && !board.buzzer.running);
-    assert(bench_melody_start() == ATLAS_OK);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_OK);
     watchdog_fault = 1U;
     bench_melody_service();
     assert(!melody_active && !board.buzzer.running);
@@ -237,8 +237,58 @@ static void test_march(void)
     assert(!melody_active && !board.buzzer.running);
     test_usb.configured = test_usb.dtr = true;
     tone_result = ATLAS_ERROR_IO;
-    assert(bench_melody_start() == ATLAS_ERROR_IO);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH) == ATLAS_ERROR_IO);
     assert(!melody_active && !board.buzzer.running);
+}
+
+/** @brief Birthday playback uses the shared scheduler, completion and cancel paths. */
+static void test_birthday(void)
+{
+    const uint16_t expected_hz[]={392,392,440,392,523,494,392,392,440,392,587,523,
+        392,392,784,659,523,494,440,698,698,659,523,587,523};
+    const uint16_t phrase_ends[]={6,12,19,25};
+    uint32_t total=0U;
+    assert(BENCH_BIRTHDAY_NOTES==25U);
+    for (unsigned i=0U;i<25U;++i)
+    {
+        assert(bench_birthday[i].hz==expected_hz[i]);
+        total+=bench_birthday[i].tone_ms+bench_birthday[i].gap_ms;
+        for (unsigned phrase=0U;phrase<4U;++phrase)
+            if(i+1U==phrase_ends[phrase])assert(total==3000U*(phrase+1U));
+    }
+    tone_result=ATLAS_OK;watchdog_fault=0U;test_usb.configured=test_usb.dtr=true;
+    test_tick=UINT32_MAX-800U;const uint32_t began=test_tick;const unsigned before=tone_requests;
+    assert(bench_melody_start(ATLAS_BENCH_BIRTHDAY)==ATLAS_OK);
+    assert(melody_track==3U && melody_count==25U && !melody_startup && !bench_dfu_ready());
+    assert(bench_melody_start(ATLAS_BENCH_BIRTHDAY)==ATLAS_ERROR_BUSY);
+    assert(bench_melody_start(ATLAS_BENCH_MARCH)==ATLAS_ERROR_BUSY && melody_track==3U);
+    uint32_t offset=0U;
+    for(unsigned i=0U;i<25U;++i)
+    {
+        test_tick=began+offset;bench_melody_service();
+        assert(melody_active && bench_board->buzzer.frequency_hz==expected_hz[i]);
+        assert(tone_duration==bench_birthday[i].tone_ms && tone_requests==before+i+1U);
+        test_tick+=bench_birthday[i].tone_ms;bench_melody_service();
+        assert(!bench_board->buzzer.running);
+        offset+=bench_birthday[i].tone_ms+bench_birthday[i].gap_ms;
+    }
+    test_tick=began+12000U;bench_melody_service();
+    assert(!melody_active && !bench_board->buzzer.running && tone_requests==before+25U);
+    test_tick+=50000U;bench_melody_service();assert(tone_requests==before+25U);
+    for(unsigned cancel=0U;cancel<4U;++cancel)
+    {
+        test_usb.configured=test_usb.dtr=true;watchdog_fault=0U;
+        assert(bench_melody_start(ATLAS_BENCH_BIRTHDAY)==ATLAS_OK);
+        if(cancel==0U)bench_melody_stop();
+        if(cancel==1U)test_usb.dtr=false;
+        if(cancel==2U)++link_epoch;
+        if(cancel==3U)watchdog_fault=1U;
+        bench_melody_service();assert(!melody_active && !bench_board->buzzer.running);
+    }
+    watchdog_fault=0U;test_usb.configured=test_usb.dtr=true;tone_result=ATLAS_ERROR_IO;
+    assert(bench_melody_start(ATLAS_BENCH_BIRTHDAY)==ATLAS_ERROR_IO);
+    assert(!melody_active && !bench_board->buzzer.running);
+    tone_result=ATLAS_OK;
 }
 
 /** @brief Check dispatch, queue reservation and both ordinary/worst-case JSON.
@@ -385,6 +435,7 @@ int main(void)
     bench_dfu_service(&test_usb, true);
     assert(!dfu_pending && dfu_resets == 1U); /* Finite deadline. */
     test_march();
+    test_birthday();
     pending=BENCH_PENDING_NONE;reply_count=0U;watchdog_fault=0U;
     assert(AtlasBench_Parse("106 servo enable 8 1320 1720", &command));
     bench_dispatch(&command);

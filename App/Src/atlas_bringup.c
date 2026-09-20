@@ -107,7 +107,7 @@ static bool hello_due;
 static bool dfu_pending;
 static uint32_t dfu_started, tx_queued, tx_completed_base, dfu_drop_base;
 
-/** @brief Owner-supplied notes with chosen octaves, tone lengths and silent gaps. */
+/** @brief Melody notes with chosen octaves, tone lengths and silent gaps. */
 typedef struct
 {
     uint16_t hz, tone_ms, gap_ms;
@@ -134,16 +134,26 @@ static const BenchNote bench_march[] = {
     {311,345,30}, {466,115,10}, {392,460,40},
     {311,345,30}, {466,115,10}, {392,960,40},
 };
+/* Traditional Happy Birthday, C major, 3/4 at 120 quarter notes/minute.
+ * Each phrase occupies two bars, including the two eighth-note pickup.
+ * G4..G5 remains within the buzzer's supported range. */
+static const BenchNote bench_birthday[] = {
+    {392,230,20}, {392,230,20}, {440,460,40}, {392,460,40}, {523,460,40}, {494,960,40},
+    {392,230,20}, {392,230,20}, {440,460,40}, {392,460,40}, {587,460,40}, {523,960,40},
+    {392,230,20}, {392,230,20}, {784,460,40}, {659,460,40}, {523,460,40}, {494,460,40}, {440,460,40},
+    {698,230,20}, {698,230,20}, {659,460,40}, {523,460,40}, {587,460,40}, {523,960,40},
+};
 /* Power-on identification only: these notes do not signal flight readiness. */
 static const BenchNote bench_startup[] = {
     {1047,80,40}, {1319,80,40}, {1568,140,100}, {2093,180,40}
 };
 #define BENCH_MARCH_NOTES (sizeof(bench_march) / sizeof(bench_march[0]))
+#define BENCH_BIRTHDAY_NOTES (sizeof(bench_birthday) / sizeof(bench_birthday[0]))
 static volatile bool melody_active; /* Owner writes; console only gates DFU. */
 static uint32_t melody_started, melody_epoch, melody_slot;
 static AtlasStatus melody_status;
 static bool melody_startup;
-static uint32_t melody_track; /* 0 idle, 1 startup, 2 march */
+static uint32_t melody_track; /* 0 idle, 1 startup, 2 march, 3 birthday */
 static const BenchNote *melody_notes = bench_march;
 static unsigned melody_count = BENCH_MARCH_NOTES;
 
@@ -196,15 +206,19 @@ static void bench_melody_service(void)
 }
 
 /** @brief Start one bounded melody; a second request never restarts it.
+ * @param operation MARCH or BIRTHDAY from the fixed command allowlist.
  * @return Initial tone result, or BUSY while the previous melody is playing. */
-static AtlasStatus bench_melody_start(void)
+static AtlasStatus bench_melody_start(AtlasBenchOperation operation)
 {
+    if (operation != ATLAS_BENCH_MARCH && operation != ATLAS_BENCH_BIRTHDAY)
+        return ATLAS_ERROR_ARGUMENT;
     if (melody_active)
         return ATLAS_ERROR_BUSY;
-    melody_notes = bench_march;
-    melody_count = BENCH_MARCH_NOTES;
+    const bool birthday = operation == ATLAS_BENCH_BIRTHDAY;
+    melody_notes = birthday ? bench_birthday : bench_march;
+    melody_count = birthday ? BENCH_BIRTHDAY_NOTES : BENCH_MARCH_NOTES;
     melody_startup = false;
-    melody_track = 2U;
+    melody_track = birthday ? 3U : 2U;
     melody_status = ATLAS_OK;
     melody_started = HAL_GetTick();
     melody_epoch = link_epoch;
@@ -441,9 +455,12 @@ static AtlasStatus bench_execute(const AtlasBenchCommand *command, BenchReply *r
     case ATLAS_BENCH_BEEP:
         return AtlasBuzzer_Beep(&bench_board->buzzer, 4800U, 200U);
     case ATLAS_BENCH_MARCH:
+    case ATLAS_BENCH_BIRTHDAY:
     {
-        const AtlasStatus status = bench_melody_start();
+        const AtlasStatus status = bench_melody_start(command->operation);
         bench_text(reply->detail, sizeof(reply->detail),
+                   command->operation == ATLAS_BENCH_BIRTHDAY ?
+                   "Happy Birthday scheduled; stop cancels playback" :
                    "Owner-provided march scheduled; stop cancels playback");
         return status;
     }
@@ -505,7 +522,8 @@ static void bench_owner_task(void *argument)
             if (watchdog_fault != 0U || work.epoch != link_epoch || !AtlasUsb_GetHealth(&usb) ||
                 !usb.configured || !usb.dtr)
                 reply.status = ATLAS_ERROR_STATE;
-            else if (work.command.operation == ATLAS_BENCH_MARCH && melody_active)
+            else if ((work.command.operation == ATLAS_BENCH_MARCH ||
+                      work.command.operation == ATLAS_BENCH_BIRTHDAY) && melody_active)
                 reply.status = ATLAS_ERROR_BUSY;
             else
             {
@@ -595,7 +613,7 @@ static void bench_hello(void)
     /* Leading LF terminates any partial record left in the host on reconnect. */
     AtlasBench_JsonRaw(
         &json, "\n{\"type\":\"hello\",\"profile\":\"" ATLAS_BENCH_PROFILE "\",\"version\":\"" ATLAS_BRINGUP_VERSION
-               "\",\"pyro_inhibited\":true,\"led_inhibited\":true,\"software_dfu\":true,\"buzzer_melody\":true");
+               "\",\"pyro_inhibited\":true,\"led_inhibited\":true,\"software_dfu\":true,\"buzzer_melody\":true,\"birthday_melody\":true");
 #if ATLAS_SERVO_BENCH
     AtlasBench_JsonRaw(&json, ",\"pwm_pyro_inhibited\":false,\"servo_test\":true");
     bench_field(&json, "servo_pwm_max_mv", ATLAS_IO_SERVO_MAX_MV);
@@ -611,6 +629,11 @@ static void bench_hello(void)
     for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
         duration_ms += bench_march[i].tone_ms + bench_march[i].gap_ms;
     bench_field(&json, "march_ms", duration_ms);
+    bench_field(&json, "birthday_notes", (uint32_t)BENCH_BIRTHDAY_NOTES);
+    duration_ms = 0U;
+    for (unsigned i = 0U; i < BENCH_BIRTHDAY_NOTES; ++i)
+        duration_ms += bench_birthday[i].tone_ms + bench_birthday[i].gap_ms;
+    bench_field(&json, "birthday_ms", duration_ms);
     bench_field(&json, "clock_hz", SystemCoreClock);
     bench_field(&json, "device_id", DBGMCU->IDCODE);
     AtlasBench_JsonRaw(&json, ",\"uid\":[");

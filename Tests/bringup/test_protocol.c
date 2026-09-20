@@ -25,6 +25,7 @@ int main(void)
                            "2 status",
                            "3 beep",
                            "33 march",
+                           "39 birthday",
                            "34 servo enable 8 900 2100",
                            "35 servo set 1 1520",
                            "36 servo stop",
@@ -60,6 +61,8 @@ int main(void)
     assert(!AtlasBench_Parse("32 bootloader", &c));
     assert(!AtlasBench_Parse("32 bootloader 1 2 4294967296", &c));
     assert(!AtlasBench_Parse("32 bootloader 1 2 3 extra", &c));
+    assert(AtlasBench_Parse("40 birthday", &c) && c.operation == ATLAS_BENCH_BIRTHDAY);
+    assert(!AtlasBench_Parse("41 birthday extra", &c));
     const char *bad_servo[]={"37 servo enable 0 900 2100","37 servo enable 1 900 2101",
         "37 servo enable 1 1520 1720","37 servo set 1 899","37 servo stop now","37 servo set 9 1520"};
     for(unsigned i=0;i<sizeof(bad_servo)/sizeof(bad_servo[0]);++i) assert(!AtlasBench_Parse(bad_servo[i],&c));

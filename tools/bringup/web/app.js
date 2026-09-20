@@ -118,8 +118,13 @@ function render(v){
   document.querySelectorAll('[data-command],#set-utc,#i2c-read').forEach(el=>el.disabled=!live||!good||!!v.pending||v.batch.length>0||v.updating);
   const playing=good&&s.buzzer?.playing===1;
   const march=$('march-button');
-  march.disabled=march.disabled||v.hello?.buzzer_melody!==true||!s?.buzzer||playing;
-  march.textContent=playing?(s.buzzer.track===1?'♪ Startup chime…':'♪ Playing Imperial March…'):'♪ Imperial March';
+  const track=s?.buzzer?.track??2;
+  march.disabled=march.disabled||v.hello?.buzzer_melody!==true||!s?.buzzer||playing||!!s?.gpio.pwm;
+  march.textContent=playing&&track===2?'♪ Playing Imperial March…':'♪ Imperial March';
+  const birthday=$('birthday-button');
+  birthday.disabled=birthday.disabled||v.hello?.buzzer_melody!==true||v.hello?.birthday_melody!==true||!s?.buzzer||playing||!!s?.gpio.pwm;
+  birthday.textContent=playing&&track===3?'♪ Playing Happy Birthday…':'♪ Happy Birthday';
+  const melodyName=track===1?'Startup chime':track===3?'Happy Birthday':'Imperial March';
   $('update-firmware').disabled=!live||!good||!!v.pending||v.batch.length>0||v.firmware.state!=='checked'||v.hello?.software_dfu!==true||v.updating||!!s?.gpio.pwm;
   $('update-firmware').disabled||=playing;
   $('check-firmware').disabled=v.updating;
@@ -159,7 +164,7 @@ function render(v){
     details('usb-details',[['Device',v.port|| (demoMode?'SIMULATED':'—')],['Session',u?.session],['RX / completed TX',u?u.rx+' / '+u.tx+' bytes':'—'],['RX / TX drops',u?u.rx_drop+' / '+u.tx_drop:'—'],['Timeouts',u?.timeouts],['Rejected telemetry',v.decoder_errors]]);
   }
   if(currentView==='tests'){
-    $('buzzer-status').textContent=demoMode?'Hardware playback is disabled in demo.':!good?'Connect Atlas with Bringup 1.1.1 or later.':v.hello?.buzzer_melody!==true||!s.buzzer?'Firmware update required · Bringup 1.1.1 or later.':playing?`Playing note ${s.buzzer.note} / ${s.buzzer.notes} · ${s.buzzer.hz?s.buzzer.hz+' Hz':'rest'} · Stop indicators cancels.`:s.buzzer.status?`Last melody stopped with driver status ${s.buzzer.status}.`:`Ready · ${v.hello.march_notes??33} notes · ${number((v.hello.march_ms??11360)/1000,2)} seconds.`;
+    $('buzzer-status').textContent=demoMode?'Hardware playback is disabled in demo.':!good?'Connect Atlas to play a melody.':v.hello?.buzzer_melody!==true||!s.buzzer?'Firmware update required · Bringup 1.1.1 or later.':playing?`${melodyName} · Playing note ${s.buzzer.note} / ${s.buzzer.notes} · ${s.buzzer.hz?s.buzzer.hz+' Hz':'rest'} · Stop indicators cancels.`:s.buzzer.status?`Last melody stopped with driver status ${s.buzzer.status}.`:`Ready · Imperial March ${number((v.hello.march_ms??11360)/1000,2)} s · ${v.hello.birthday_melody===true?'Happy Birthday '+number((v.hello.birthday_ms??12000)/1000,2)+' s':'Happy Birthday requires firmware 1.2.6 or later'}.`;
     const fsNames=['OK','Disk I/O error','Internal filesystem error','Not mounted / card unavailable','File missing: prepare ATLAS.TXT','Path missing','Invalid filename','Access denied','ATLASCHK.TST already exists — preserved','Invalid file object','Write protected','Invalid drive','Not enabled','No FAT filesystem','Format aborted','Timeout','Locked','Out of memory','Too many open files','Invalid parameter'];
     $('sd-summary').textContent=good?(s.sd.card?'Card detected':'No card')+' · '+(s.sd.mounted?'Mounted':'Unmounted')+' · '+(fsNames[s.sd.fs]||'FatFs '+s.sd.fs)+(s.sd.stage!==undefined?' · controller stage '+s.sd.stage+' · HAL '+s.sd.hal_status+' / 0x'+s.sd.hal_error.toString(16):'')+' · '+s.sd.completed+' operations · '+s.sd.errors+' errors':'Awaiting storage telemetry.';
     $('operation-status').textContent=v.blocked|| (v.pending?'Running: '+v.pending+(v.batch.length?' · '+v.batch.length+' sensor probes remaining':''):'No operation pending.');
@@ -191,6 +196,7 @@ async function command(verb){
   else if(verb==='uart'||verb==='spi'||verb.startsWith('i2c '))copy='Confirm the documented expansion test fixture and voltage levels. This sends bytes on the selected physical bus.';
   else if(verb==='beep')copy='Drive the buzzer for a requested 200 ms pulse. Keep motors, servos and energetic loads disconnected.';
   else if(verb==='march')copy=`Play the ${state.hello.march_notes??33}-note arrangement for ${number((state.hello.march_ms??11360)/1000,2)} seconds. Stop indicators cancels playback. Keep motors, servos and pyro loads disconnected.`;
+  else if(verb==='birthday')copy=`Play Happy Birthday once (${number((state.hello.birthday_ms??12000)/1000,2)} seconds). Stop indicators cancels playback. Keep motors, servos and pyro loads disconnected.`;
   else if(verb.startsWith('utc '))copy='Set the board RTC to this laptop’s current UTC. This changes timestamps used by storage operations.';
   if(copy&&!await confirmAction(verb,copy))return;
   await act('command',{verb,action_confirmed:!!copy||verb==='gpio 0'});

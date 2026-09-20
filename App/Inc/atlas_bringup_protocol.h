@@ -39,7 +39,8 @@ typedef enum
     ATLAS_BENCH_I2C_READ,
     ATLAS_BENCH_DFU,
     ATLAS_BENCH_MARCH,
-    ATLAS_BENCH_SERVO_ENABLE, ATLAS_BENCH_SERVO_SET, ATLAS_BENCH_SERVO_STOP
+    ATLAS_BENCH_SERVO_ENABLE, ATLAS_BENCH_SERVO_SET, ATLAS_BENCH_SERVO_STOP,
+    ATLAS_BENCH_BIRTHDAY
 } AtlasBenchOperation;
 /** @brief Copied command: nonzero host ID, allowlisted operation, bounded integers. */
 typedef struct

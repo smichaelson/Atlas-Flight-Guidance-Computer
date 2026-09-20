@@ -79,9 +79,11 @@ def validate(frame: object) -> dict:
                 not _array(frame.get("uid"), 3) or not _integer(frame.get("device_id")) or
                 not _integer(frame.get("clock_hz"), 1)):
             raise ValueError("Not a recognized inhibited Atlas bring-up image")
-        for key, maximum in (('march_notes',128),('march_ms',60000)):
+        for key, maximum in (('march_notes',128),('march_ms',60000),('birthday_notes',128),('birthday_ms',60000)):
             if key in frame and not _integer(frame[key],1,maximum):
                 raise ValueError('Invalid melody metadata')
+        if 'birthday_melody' in frame and type(frame['birthday_melody']) is not bool:
+            raise ValueError('Invalid birthday melody capability')
         if 'servo_pwm_max_mv' in frame and (frame['profile'] != 'servo_bench' or
                 not _integer(frame['servo_pwm_max_mv'], 1, 30000)):
             raise ValueError('Invalid servo voltage policy')
@@ -156,7 +158,8 @@ def validate(frame: object) -> dict:
                     not _integer(buzzer.get("notes"), 1, 128) or
                     not _integer(buzzer.get("note"), 0, buzzer.get("notes", 0)) or
                     not _integer(buzzer.get("hz"), 0, 10000) or
-                    not _integer(buzzer.get("status"), 0, 13)):
+                    not _integer(buzzer.get("status"), 0, 13) or
+                    ('track' in buzzer and not _integer(buzzer['track'], 0, 3))):
                 raise ValueError("Invalid buzzer playback state")
         if (not isinstance(led, dict) or
                 not _integer(led.get("commanded"), 0, 0) or
@@ -280,7 +283,7 @@ class Decoder:
 
 def valid_command(verb: str) -> bool:
     """@brief Match the firmware allowlist, never arbitrary terminal text. @return Validity."""
-    if verb in {"hello", "status", "beep", "march", "stop", "uart", "spi", "sd mount", "sd read",
+    if verb in {"hello", "status", "beep", "march", "birthday", "stop", "uart", "spi", "sd mount", "sd read",
                 "sd test", "sd unmount", "ble profile", "ble data", "ble command", "ble ping",
                 "radio id", "radio ping"}:
         return True
@@ -412,11 +415,13 @@ class Session:
                 channel, pulse = int(parts[2]), int(parts[3])
                 if s['gpio']['pwm'] != 1 << (channel-1) or not s['servo']['min_us'] <= pulse <= s['servo']['max_us']:
                     raise ValueError('Enable this channel first and stay within its limits')
-        if verb == "march":
+        if verb in {"march", "birthday"}:
             if self.hello.get("buzzer_melody") is not True or "buzzer" not in self.status:
                 raise ValueError("Install Bringup 1.1.1 or later for buzzer melody playback")
+            if verb == 'birthday' and self.hello.get('birthday_melody') is not True:
+                raise ValueError('Install Bringup or ServoBench 1.2.6 or later for Happy Birthday')
             if self.status["buzzer"]["playing"]:
-                raise ValueError("The march is already playing; Stop indicators cancels it")
+                raise ValueError("A melody is already playing; Stop indicators cancels it")
         if verb.startswith("bootloader "):
             if (self.hello.get("software_dfu") is not True or
                     [int(v) for v in verb.split()[1:]] != self.hello["uid"]):

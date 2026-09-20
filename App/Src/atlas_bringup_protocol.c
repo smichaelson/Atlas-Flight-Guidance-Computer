@@ -72,6 +72,7 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
         {"hello", ATLAS_BENCH_HELLO},    {"status", ATLAS_BENCH_STATUS},
         {"beep", ATLAS_BENCH_BEEP},      {"stop", ATLAS_BENCH_STOP},
         {"march", ATLAS_BENCH_MARCH},
+        {"birthday", ATLAS_BENCH_BIRTHDAY},
         {"uart", ATLAS_BENCH_UART_TEST}, {"spi", ATLAS_BENCH_SPI_TEST}};
     if (count == 2U)
     {

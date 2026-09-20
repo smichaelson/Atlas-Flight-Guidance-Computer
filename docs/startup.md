@@ -382,7 +382,8 @@ Only send the next line after the previous reply; the snippet is not a batch scr
 | `hello`, `status` | Read-only identification/ack; full status is streamed periodically |
 | `probe adxl/lsm/mmc/baro/bno/gnss/ble/radio` | Choose one literal module name. Only a completed failed GNSS probe may be explicitly retried |
 | `led 0`, `beep`, `stop` | Explicit RGB-low request; 200 ms nominal beep; stop buzzer and force RGB low. Nonzero LED masks are rejected |
-| `march` | Bringup 1.1.1+: play a fixed melody once without blocking sensor polling; `stop` cancels. Version 1.2.1 revises it to 39 notes / 15.5 s. See [melody controls](GROUND_STATION.md#play-the-buzzer-melody) |
+| `march` | Bringup 1.1.1+: play a fixed melody once without blocking sensor polling; `stop` cancels. Version 1.2.2+ uses the accepted 42-note / 16.5 s Preview C. See [melody controls](GROUND_STATION.md#play-the-buzzer-melody) |
+| `birthday` | Bringup/ServoBench 1.2.6+: play Happy Birthday once, 25 notes / 12 s; `stop` cancels. No overlap or replay queue |
 | `gpio 1..7`, `gpio 0` | One logic-only 1 s HIGH; or all logic outputs LOW |
 | `sd mount/read/test/unmount` | Choose one operation; fixed safe fixture names |
 | `utc YYYY M D h m s` | Explicit Gregorian UTC, years 2000–2099 |

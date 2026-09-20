@@ -293,6 +293,37 @@ class StationTests(unittest.TestCase):
         self.s.action("command",dict(verb="stop"))
         self.assertEqual(self.s.serial.writes,[b"1 stop\n"])
 
+    def test_birthday_needs_capability_and_confirmation_then_sends_once(self):
+        self.live();self.s.session.hello['buzzer_melody']=True
+        self.s.session.status['buzzer']=dict(playing=0,note=0,notes=25,hz=0,status=0,track=3)
+        with self.assertRaisesRegex(ValueError,'1.2.6'):
+            self.s.action('command',dict(verb='birthday',action_confirmed=True))
+        self.s.session.hello['birthday_melody']=True
+        with self.assertRaises(ValueError):self.s.action('command',dict(verb='birthday'))
+        self.s.action('command',dict(verb='birthday',action_confirmed=True))
+        self.assertEqual(self.s.serial.writes,[b'1 birthday\n'])
+
+    def test_either_playing_melody_blocks_both_starts_and_dfu(self):
+        for track in (1,2,3):
+            self.setUp();self.live();self.s.session.hello.update(buzzer_melody=True,birthday_melody=True)
+            self.s.session.status['buzzer']=dict(playing=1,note=1,notes=25,hz=392,status=0,track=track)
+            for verb in ('birthday','march','bootloader 1 2 3'):
+                with self.assertRaises(ValueError):self.s.session.request(verb,time.monotonic(),True)
+            self.s.action('command',dict(verb='stop'))
+            self.assertEqual(self.s.serial.writes,[b'1 stop\n'])
+
+    def test_birthday_metadata_and_track_are_strict(self):
+        for key,values in [('birthday_melody',[1,'true',None]),('birthday_notes',[0,129,True]),
+                           ('birthday_ms',[0,60001,'12000'])]:
+            for value in values:
+                h=demo.hello();h[key]=value
+                self.assertEqual(Decoder().feed(json.dumps(h).encode()+b'\n'),[])
+        s=demo.status();s['buzzer']=dict(playing=1,note=1,notes=25,hz=392,status=0,track=3)
+        self.assertEqual(len(Decoder().feed(json.dumps(s).encode()+b'\n')),1)
+        for value in (-1,4,True,'3'):
+            s['buzzer']['track']=value
+            self.assertEqual(Decoder().feed(json.dumps(s).encode()+b'\n'),[])
+
     def test_march_telemetry_is_optional_for_old_firmware_but_strict_if_present(self):
         good=demo.status()
         good["buzzer"]=dict(playing=1,note=3,notes=33,hz=1568,status=0)
