@@ -25,6 +25,9 @@
 #include "task.h"
 #include <stddef.h>
 #include <string.h>
+#if ATLAS_SERVO_BENCH
+#include <math.h>
+#endif
 
 #define IO_STACK_WORDS (1536U)
 #define IO_PERIOD_MS (5U)
@@ -80,6 +83,19 @@ static bool bench_gpio_active;
 #if ATLAS_SERVO_BENCH
 static volatile uint32_t servo_cancel_epoch;
 static uint32_t servo_seen_cancel, servo_started_ms, servo_changed_ms, servo_usb_session;
+static uint32_t servo_sweep_started_ms;
+static uint16_t servo_sweep_period_ms;
+static uint8_t servo_sweep_channel;
+static AtlasStabilization stab_filter;
+static AtlasStabilizationCommands stab_commands;
+static AtlasStabilizationConfig stab_config, stab_pending_config;
+static AtlasStabilizationSample stab_sample;
+static bool stab_pending, stab_pending_success, stab_pending_boot, stab_save_busy;
+static bool stab_switch_released, stab_switch_high, stab_fault;
+static uint32_t stab_pending_token, stab_switch_ms, stab_last_ms;
+static const uint8_t stab_channels[4]={6U,7U,0U,1U};
+/** @brief Check the current servo rail. @param now Tick. @return Usable supply. */
+static bool io_servo_rails(uint32_t now);
 #endif
 static volatile uint32_t power_events, ecc_events, ecc_monitor_register, ecc_failing_word, ecc_error_code;
 static RAMECC_HandleTypeDef dtcm0_monitor;
@@ -546,6 +562,87 @@ void AtlasIo_BenchServoStop(void)
 #endif
 }
 
+/** @brief USB session changes fence manual control without touching saved stabilization. */
+void AtlasIo_BenchUsbLost(void)
+{
+#if ATLAS_SERVO_BENCH
+    const uint32_t lock=io_lock();
+    if(!working.stabilization.enabled && !stab_save_busy) AtlasIo_BenchServoStop();
+    io_unlock(lock);
+#endif
+}
+/** @brief Copy the direct sensor owner's latest sample. @param sample Input. */
+void AtlasIo_StabilizationSample(const AtlasStabilizationSample *sample)
+{
+#if ATLAS_SERVO_BENCH
+    if(!sample) return;
+    const uint32_t lock=io_lock(); stab_sample=*sample; io_unlock(lock);
+#else
+    (void)sample;
+#endif
+}
+/** @brief Prepare one explicit persisted change. @param operation Off/on/calibrate/directions.
+ * @param reverse Direction bits. @param config Output. @param token Epoch. @return Status. */
+AtlasStatus AtlasIo_StabilizationPrepare(uint32_t operation,uint32_t reverse,
+                                       AtlasStabilizationConfig *config,uint32_t *token)
+{
+#if ATLAS_SERVO_BENCH
+    if(!config || !token || operation>3U || reverse>15U) return ATLAS_ERROR_ARGUMENT;
+    const uint32_t lock=io_lock();
+    AtlasStatus result=ATLAS_OK;
+    if(stab_save_busy || stab_pending) result=ATLAS_ERROR_BUSY;
+    else if(operation!=0U && (working.external_switch || working.pwm_enabled_mask || emergency_latched)) result=ATLAS_ERROR_STATE;
+    else if(operation==2U)
+    {
+        if(!AtlasStabilization_Calibrate(&stab_filter,reverse,config)) result=ATLAS_ERROR_NOT_READY;
+    }
+    else if(!working.stabilization.calibrated) result=ATLAS_ERROR_NOT_READY;
+    else
+    {
+        *config=stab_config;
+        if(operation==3U) { config->reverse_mask=reverse; config->enabled=0U; }
+        else config->enabled=operation==1U?1U:0U;
+        if(operation==1U && (!stab_filter.ready || !io_servo_rails(HAL_GetTick()))) result=ATLAS_ERROR_NOT_READY;
+        AtlasStabilization_Seal(config);
+    }
+    if(result==ATLAS_OK)
+    {
+        AtlasIo_BenchServoStop();
+        stab_save_busy=true; *token=servo_cancel_epoch;
+    }
+    io_unlock(lock);
+    return result;
+#else
+    (void)operation;(void)reverse;(void)config;(void)token;return ATLAS_ERROR_UNSUPPORTED;
+#endif
+}
+/** @brief Fence delayed media work. @param token Epoch. @param enabling Active intent.
+ * @return Still authorized by the current request and physical switch. */
+bool AtlasIo_StabilizationSaveCurrent(uint32_t token,bool enabling)
+{
+#if ATLAS_SERVO_BENCH
+    const uint32_t lock=io_lock();
+    const bool current=stab_save_busy && token==servo_cancel_epoch &&
+        (!enabling || (!emergency_latched && HAL_GPIO_ReadPin(EXT_SWITCH_GPIO_Port,EXT_SWITCH_Pin)==GPIO_PIN_RESET));
+    io_unlock(lock); return current;
+#else
+    (void)token;(void)enabling;return false;
+#endif
+}
+/** @brief Publish verified boot/save result for the output owner. @param config Record.
+ * @param token Save epoch. @param success Verified result. @param boot Initial read. */
+void AtlasIo_StabilizationSaved(const AtlasStabilizationConfig *config,uint32_t token,bool success,bool boot)
+{
+#if ATLAS_SERVO_BENCH
+    const uint32_t lock=io_lock();
+    stab_pending_config=config?*config:(AtlasStabilizationConfig){0};
+    stab_pending_success=success; stab_pending_boot=boot; stab_pending_token=token; stab_pending=true;
+    io_unlock(lock);
+#else
+    (void)config;(void)token;(void)success;(void)boot;
+#endif
+}
+
 #if ATLAS_SERVO_BENCH
 /** @brief Owner-selected PWM voltage ceiling, independent of flight permission.
  * Other rails are diagnostic only in ServoBench. A zero, invalid or stale PWM
@@ -558,6 +655,120 @@ static bool io_servo_rails(uint32_t now)
         io_rail(ATLAS_ANALOG_PWM_SUPPLY, now, 1U, ATLAS_IO_SERVO_MAX_MV);
 }
 
+/** @brief Read new sensor data and execute the autonomous bench mode in the output owner.
+ * @param now Current tick. Float work is outside the short register critical section. */
+static void io_stabilization_service(uint32_t now)
+{
+    const uint32_t cycle_cancel=servo_cancel_epoch;
+    AtlasStabilizationSnapshot *s=&working.stabilization;
+    if(stab_pending)
+    {
+        const uint32_t lock=io_lock();
+        io_pwm_disable(UINT8_MAX);
+        if(stab_pending_success && AtlasStabilization_ConfigValid(&stab_pending_config) &&
+           (stab_pending_boot || stab_pending_token==servo_cancel_epoch))
+        {
+            stab_config=stab_pending_config;
+            s->calibrated=s->saved=true; s->enabled=stab_config.enabled!=0U;
+            s->reverse_mask=stab_config.reverse_mask;
+            memset(&stab_filter,0,sizeof(stab_filter));
+            s->reason=0U;
+            s->fault_detail=ATLAS_STAB_FAULT_NONE;
+        }
+        else if(!stab_pending_boot) { s->saved=false; s->enabled=false; s->reason=9U; }
+        stab_pending=false; stab_save_busy=false; s->active=false;
+        stab_switch_released=false; stab_fault=false; stab_switch_ms=now;
+        ++output_epoch;
+        io_unlock(lock);
+    }
+    AtlasStabilizationSample sample;
+    const uint32_t copy_lock=io_lock(); sample=stab_sample; io_unlock(copy_lock);
+    AtlasStabilization_Update(&stab_filter,&sample,s->calibrated?&stab_config:NULL,now);
+    memcpy(s->up,stab_filter.up,sizeof(s->up));
+    AtlasStabilizationConfig candidate;
+    s->calibration_ready=AtlasStabilization_Calibrate(&stab_filter,0U,&candidate);
+    s->save_busy=stab_save_busy;
+    if(working.external_switch!=stab_switch_high)
+    { stab_switch_high=working.external_switch; stab_switch_ms=now; }
+    if(!working.external_switch && (uint32_t)(now-stab_switch_ms)>=100U)
+    { stab_switch_released=true; stab_fault=false; }
+    const bool canceled=servo_seen_cancel!=servo_cancel_epoch;
+    if(canceled)
+    { stab_switch_released=false; stab_switch_ms=now; stab_fault=true; s->reason=1U; }
+    if(!s->enabled || stab_save_busy || !working.external_switch || !stab_switch_released || stab_fault)
+    {
+        if(s->active) io_pwm_disable(UINT8_MAX);
+        s->active=false;
+        s->state=stab_save_busy?6U:(!s->calibrated?0U:(!s->enabled?1U:(stab_fault?5U:2U)));
+        return;
+    }
+    if(!io_servo_rails(now) || !stab_filter.ready)
+    {
+        if(s->active)
+        {
+            io_pwm_disable(UINT8_MAX); s->active=false; stab_fault=true; stab_switch_released=false;
+            s->reason=io_servo_rails(now)?7U:4U; ++output_epoch;
+            s->fault_detail=s->reason==7U?stab_filter.fault:ATLAS_STAB_FAULT_NONE;
+        }
+        s->state=stab_fault?5U:3U;
+        return;
+    }
+    if((uint32_t)(now-stab_switch_ms)<100U) { s->state=3U; return; }
+    uint16_t previous[4],targets[4];
+    for(unsigned i=0;i<4U;++i) previous[i]=s->active?working.commanded_pwm_us[stab_channels[i]]:1500U;
+    if(!AtlasStabilization_Targets(&stab_config,stab_filter.up,previous,targets,&s->limited_mask,&s->singular_mask))
+    { io_pwm_disable(UINT8_MAX); s->active=false; stab_fault=true; s->state=5U; s->reason=7U;
+      s->fault_detail=ATLAS_STAB_FAULT_GEOMETRY; return; }
+    const bool advance=s->active && (uint32_t)(now-stab_last_ms)>=ATLAS_STAB_COMMAND_PERIOD_MS;
+    uint16_t commands[4];
+    AtlasStabilizationCommands next_commands=stab_commands;
+    if(advance && !AtlasStabilization_CommandsStep(&next_commands,targets,previous,s->singular_mask,now,commands))
+    { io_pwm_disable(UINT8_MAX); s->active=false; stab_fault=true; s->state=5U; s->reason=7U;
+      s->fault_detail=ATLAS_STAB_FAULT_COMMAND; return; }
+    const uint32_t lock=io_lock();
+    if(cycle_cancel!=servo_cancel_epoch || emergency_latched ||
+       HAL_GPIO_ReadPin(EXT_SWITCH_GPIO_Port,EXT_SWITCH_Pin)!=GPIO_PIN_SET)
+    { io_unlock(lock); return; }
+    if(!s->active)
+    {
+        /* All four channels use TIM3. Latch all neutral compares together BEFORE
+         * exposing any pin; subsequent moves only update compare preloads. */
+        if(working.pwm_enabled_mask!=0U) { io_unlock(lock); return; }
+        for(unsigned i=0;i<4U;++i) __HAL_TIM_SET_COMPARE(io_pwm_timer(stab_channels[i]),pwm_routes[stab_channels[i]].timer_channel,1500U);
+        TIM3->CNT=0U; TIM3->EGR=TIM_EGR_UG;
+        working.pwm_enabled_mask=ATLAS_STAB_MASK; /* Include partial starts in cleanup. */
+        for(unsigned i=0;i<4U;++i)
+        {
+            const uint8_t ch=stab_channels[i]; io_pwm_pin(ch,true);
+            if(HAL_TIM_PWM_Start(io_pwm_timer(ch),pwm_routes[ch].timer_channel)!=HAL_OK)
+            { io_fail(ATLAS_ERROR_IO); io_pwm_disable(UINT8_MAX); s->active=false;
+              s->state=5U; s->reason=5U; stab_fault=true; io_unlock(lock); return; }
+            working.commanded_pwm_us[ch]=1500U;
+        }
+        working.pwm_enabled_mask=ATLAS_STAB_MASK;
+        working.servo_minimum_us=1000U; working.servo_maximum_us=2000U; working.servo_target_us=0U;
+        s->active=true; s->reason=0U;
+        s->fault_detail=ATLAS_STAB_FAULT_NONE;
+        AtlasStabilization_CommandsReset(&stab_commands,now);
+        stab_last_ms=now;
+    }
+    else if(advance)
+    {
+        stab_commands=next_commands;
+        for(unsigned i=0;i<4U;++i)
+        {
+            const uint16_t pulse=commands[i];
+            const uint8_t ch=stab_channels[i];
+            if(pulse!=previous[i]) __HAL_TIM_SET_COMPARE(io_pwm_timer(ch),pwm_routes[ch].timer_channel,pulse);
+            working.commanded_pwm_us[ch]=pulse;
+        }
+        stab_last_ms=now;
+    }
+    s->state=4U;
+    for(unsigned i=0;i<4U;++i) s->pulse_us[i]=working.commanded_pwm_us[stab_channels[i]];
+    io_unlock(lock);
+}
+
 /** @brief Cut PWM without depending on console progress or result-queue space.
  * @param now Current tick; subtraction handles wraparound. */
 static void io_bench_servo_service(uint32_t now)
@@ -565,13 +776,15 @@ static void io_bench_servo_service(uint32_t now)
     AtlasUsbHealth usb = {0};
     const bool online = AtlasUsb_GetHealth(&usb) && usb.configured && usb.dtr;
     working.servo_ready = io_servo_rails(now) && online;
+    if(working.stabilization.enabled || stab_save_busy) working.servo_ready=false;
     uint32_t reason = 0U;
     if (servo_seen_cancel != servo_cancel_epoch) reason = 1U;
-    else if (working.pwm_enabled_mask != 0U)
+    else if (working.pwm_enabled_mask != 0U && !working.stabilization.active)
     {
         if (emergency_latched || working.status != ATLAS_OK) reason = 5U;
         else if (!online || usb.session != servo_usb_session) reason = 3U;
         else if (!io_servo_rails(now)) reason = 4U;
+        else if (servo_sweep_period_ms && working.external_switch) reason = 1U;
         else if ((uint32_t)(now - servo_changed_ms) >= ATLAS_IO_SERVO_IDLE_MS ||
                  (uint32_t)(now - servo_started_ms) >= ATLAS_IO_SERVO_SESSION_MS) reason = 2U;
     }
@@ -583,8 +796,30 @@ static void io_bench_servo_service(uint32_t now)
         ++output_epoch;
         servo_seen_cancel = servo_cancel_epoch;
     }
+    if (!working.pwm_enabled_mask || working.stabilization.enabled || stab_save_busy) servo_sweep_period_ms=0U;
+    if (servo_sweep_period_ms && reason==0U)
+    {
+        const uint32_t cancel=servo_cancel_epoch;
+        const uint32_t elapsed=(uint32_t)(now-servo_sweep_started_ms);
+        /* One analytic full cycle, then neutral until the unchanged 3 s idle
+         * cutoff. There is no queued ramp and this never refreshes that cutoff. */
+        uint16_t pulse=1500U;
+        if(elapsed<servo_sweep_period_ms)
+            pulse=(uint16_t)lroundf(1500.0f+500.0f*sinf(6.28318530718f*(float)elapsed/(float)servo_sweep_period_ms));
+        const uint8_t ch=servo_sweep_channel;
+        const uint32_t lock=io_lock();
+        if(cancel==servo_cancel_epoch && !emergency_latched &&
+           HAL_GPIO_ReadPin(EXT_SWITCH_GPIO_Port,EXT_SWITCH_Pin)==GPIO_PIN_RESET &&
+           working.pwm_enabled_mask==(uint8_t)(1U<<ch))
+        {
+            if(pulse!=working.commanded_pwm_us[ch])
+                __HAL_TIM_SET_COMPARE(io_pwm_timer(ch),pwm_routes[ch].timer_channel,pulse);
+            working.commanded_pwm_us[ch]=working.servo_target_us=pulse;
+        }
+        io_unlock(lock);
+    }
     working.servo_remaining_ms = 0U;
-    if (working.pwm_enabled_mask != 0U)
+    if (working.pwm_enabled_mask != 0U && !working.stabilization.active)
     {
         const uint32_t idle = ATLAS_IO_SERVO_IDLE_MS - (uint32_t)(now - servo_changed_ms);
         const uint32_t session = ATLAS_IO_SERVO_SESSION_MS - (uint32_t)(now - servo_started_ms);
@@ -599,6 +834,7 @@ static AtlasStatus io_bench_servo_execute(const IoQueued *queued, uint32_t now)
 {
     const AtlasIoCommand *command = &queued->command;
     AtlasUsbHealth usb = {0};
+    if(working.stabilization.enabled || stab_save_busy) return ATLAS_ERROR_BUSY;
     if (queued->epoch != output_epoch || queued->servo_cancel != servo_cancel_epoch ||
         (uint32_t)(now - queued->submitted_ms) > ATLAS_IO_COMMAND_MAX_AGE_MS ||
         !io_servo_rails(now) || !AtlasUsb_GetHealth(&usb) || !usb.configured || !usb.dtr ||
@@ -626,18 +862,34 @@ static AtlasStatus io_bench_servo_execute(const IoQueued *queued, uint32_t now)
         working.servo_maximum_us = maximum;
         working.servo_stop_reason = working.servo_stop_pwm_mv = 0U;
         working.servo_target_us = 1520U;
+        servo_sweep_period_ms=0U;
         servo_started_ms = servo_changed_ms = now;
         servo_usb_session = usb.session;
         servo_seen_cancel = servo_cancel_epoch;
     }
     else
     {
-        const uint16_t pulse = command->arguments.pwm.pulse_us;
         if (working.pwm_enabled_mask != (uint8_t)(1U << channel) ||
             usb.session != servo_usb_session ||
             (uint32_t)(now - servo_changed_ms) >= ATLAS_IO_SERVO_IDLE_MS ||
             (uint32_t)(now - servo_started_ms) >= ATLAS_IO_SERVO_SESSION_MS)
             return ATLAS_ERROR_STATE;
+        if(command->type==ATLAS_IO_BENCH_SERVO_SWEEP)
+        {
+            const uint16_t period=command->arguments.sweep.period_ms;
+            if(servo_sweep_period_ms) return ATLAS_ERROR_BUSY;
+            if((period!=1000U && period!=2000U) || working.servo_minimum_us>1000U ||
+               working.servo_maximum_us<2000U) return ATLAS_ERROR_ARGUMENT;
+            if(working.external_switch || HAL_GPIO_ReadPin(EXT_SWITCH_GPIO_Port,EXT_SWITCH_Pin)!=GPIO_PIN_RESET ||
+               (uint32_t)(now-servo_started_ms)>=ATLAS_IO_SERVO_SESSION_MS-ATLAS_IO_SERVO_IDLE_MS)
+                return ATLAS_ERROR_STATE;
+            servo_sweep_channel=channel;servo_sweep_period_ms=period;servo_sweep_started_ms=now;
+            __HAL_TIM_SET_COMPARE(timer,timer_channel,1500U);
+            working.commanded_pwm_us[channel]=working.servo_target_us=1500U;
+            servo_changed_ms=now;
+            return ATLAS_OK;
+        }
+        const uint16_t pulse = command->arguments.pwm.pulse_us;
         if (pulse < working.servo_minimum_us || pulse > working.servo_maximum_us)
             return ATLAS_ERROR_ARGUMENT;
         /* Like enable, give the servo its destination once and let its own
@@ -646,6 +898,7 @@ static AtlasStatus io_bench_servo_execute(const IoQueued *queued, uint32_t now)
         __HAL_TIM_SET_COMPARE(timer, timer_channel, pulse);
         working.commanded_pwm_us[channel] = pulse;
         working.servo_target_us = pulse;
+        servo_sweep_period_ms=0U;
         servo_changed_ms = now;
     }
     return ATLAS_OK;
@@ -657,6 +910,11 @@ static void io_stop_all(void)
     (void)io_pyro_stop();
     AtlasPyroPolicy_Disarm(&working.pyro, HAL_GetTick());
     io_pwm_disable(UINT8_MAX);
+#if ATLAS_SERVO_BENCH
+    working.stabilization.active=false;
+    if(working.stabilization.enabled)
+    { working.stabilization.state=5U; working.stabilization.reason=5U; stab_fault=true; stab_switch_released=false; }
+#endif
     io_gpio_low();
     working.gpio_commanded_high = 0U;
     ++output_epoch;
@@ -683,7 +941,13 @@ static AtlasStatus io_execute_unlocked(const IoQueued *queued)
     const AtlasIoCommand *command = &queued->command;
     const uint32_t now = HAL_GetTick();
     if (command->type == ATLAS_IO_PWM_DISABLE)
-    { io_pwm_disable(command->arguments.channel_mask); ++output_epoch; return ATLAS_OK; }
+    {
+#if ATLAS_SERVO_BENCH
+        if(working.stabilization.enabled)
+        { AtlasIo_BenchServoStop(); io_stop_all(); return ATLAS_OK; }
+#endif
+        io_pwm_disable(command->arguments.channel_mask); ++output_epoch; return ATLAS_OK;
+    }
     if (command->type == ATLAS_IO_PYRO_DISARM)
     { const bool safe = io_pyro_stop(); AtlasPyroPolicy_Disarm(&working.pyro, HAL_GetTick()); ++output_epoch; return safe ? ATLAS_OK : ATLAS_ERROR_IO; }
     if (command->type == ATLAS_IO_GPIO_SET && !command->arguments.gpio.high)
@@ -696,7 +960,8 @@ static AtlasStatus io_execute_unlocked(const IoQueued *queued)
     }
 #if ATLAS_BRINGUP
 #if ATLAS_SERVO_BENCH
-    if (command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET)
+    if (command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET ||
+        command->type == ATLAS_IO_BENCH_SERVO_SWEEP)
         return io_bench_servo_execute(queued, now);
 #endif
     /* Ordinary Bringup keeps its no-PWM contract. Pyro has no bench override. */
@@ -844,6 +1109,7 @@ static void io_task(void *argument)
         io_bench_gpio_service(now);
 #endif
 #if ATLAS_SERVO_BENCH
+        io_stabilization_service(now);
         io_bench_servo_service(now);
 #else
         /* Flight permission/voltage policy must not also cut a ServoBench channel. */
@@ -999,8 +1265,9 @@ AtlasStatus AtlasIo_Submit(const AtlasIoCommand *command, uint32_t *ticket)
 {
     if (command == NULL) return ATLAS_ERROR_NULL;
     if (!io_context()) return ATLAS_ERROR_STATE;
-    if ((uint32_t)command->type > ATLAS_IO_BENCH_SERVO_SET) return ATLAS_ERROR_ARGUMENT;
-    const bool servo = command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET;
+    if ((uint32_t)command->type > ATLAS_IO_BENCH_SERVO_SWEEP) return ATLAS_ERROR_ARGUMENT;
+    const bool servo = command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET ||
+                       command->type == ATLAS_IO_BENCH_SERVO_SWEEP;
     if (servo && !ATLAS_SERVO_BENCH) return ATLAS_ERROR_UNSUPPORTED;
     if (!ATLAS_BRINGUP && command->type == ATLAS_IO_BENCH_GPIO) return ATLAS_ERROR_UNSUPPORTED;
     if (ATLAS_BRINGUP && !servo && command->type != ATLAS_IO_BENCH_GPIO &&

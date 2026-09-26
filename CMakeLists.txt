@@ -71,6 +71,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/atlas_rtos_policy.c
     App/Src/atlas_spi_device.c
     App/Src/atlas_status.c
+    App/Src/atlas_stabilization.c
     App/Src/atlas_storage.c
     App/Src/atlas_time.c
     App/Src/atlas_uart_transport.c

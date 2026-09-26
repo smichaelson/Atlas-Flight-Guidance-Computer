@@ -270,8 +270,8 @@ class Station:
                 verb = body.get("verb", "")
                 if not isinstance(verb, str) or len(verb) > 90 or verb.startswith("bootloader"):
                     raise ValueError("Use the verified firmware-update workflow.")
-                if verb.startswith('servo '):
-                    raise ValueError('Use the dedicated servo controls')
+                if verb.startswith(('servo ','stabilize ')):
+                    raise ValueError('Use the dedicated servo or stabilization controls')
                 if self.batch:
                     raise ValueError("Wait for the sensor sequence to finish.")
                 # Fixture/RF/media mutations carry an additional deliberate UI acknowledgement.
@@ -284,6 +284,26 @@ class Station:
                 self.servo_approved = None
                 self.servo_control_epoch += 1
                 self.send('servo stop')
+            elif action == 'stabilization':
+                operation=body.get('operation')
+                if operation not in ('on','off','calibrate','directions'):
+                    raise ValueError('Unknown stabilization operation')
+                if operation!='off':
+                    if (type(body.get('generation')) is not int or body['generation']!=self.generation or
+                            type(body.get('control_epoch')) is not int or body['control_epoch']!=self.servo_control_epoch):
+                        raise ValueError('Control session changed; reload fresh dashboard state')
+                    if self.batch or body.get('confirmed') is not True:
+                        raise ValueError('Wait for probing and confirm the bench setup')
+                verb='stabilize '+operation
+                if operation in ('calibrate','directions'):
+                    reverse=body.get('reverse_mask')
+                    if type(reverse) is not int or not 0<=reverse<=15:
+                        raise ValueError('Invalid servo direction mask')
+                    verb+=' '+str(reverse)
+                if operation=='off': self.batch.clear()
+                self.servo_approved=None
+                self.servo_control_epoch+=1
+                self.send(verb)
             elif action == 'servo':
                 if (type(body.get('generation')) is not int or body['generation'] != self.generation or
                         type(body.get('control_epoch')) is not int or body['control_epoch'] != self.servo_control_epoch):
@@ -306,6 +326,12 @@ class Station:
                     if self.servo_approved != (self.generation, channel) or type(pulse) is not int or not 900 <= pulse <= 2100:
                         raise ValueError('Explicitly enable this channel before moving it')
                     self.send(f'servo set {channel} {pulse}')
+                elif operation == 'sweep':
+                    period = body.get('period_ms')
+                    if (self.servo_approved != (self.generation, channel) or body.get('confirmed') is not True or
+                            type(period) is not int or period not in (1000, 2000)):
+                        raise ValueError('Confirm one bounded sweep on the explicitly enabled channel')
+                    self.send(f'servo sweep {channel} {period}')
                 else:
                     raise ValueError('Unknown servo operation')
             elif action == "sensors":
@@ -415,7 +441,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/":
             self.reply((WEB / "index.html").read_text(encoding="utf-8").replace("__ATLAS_TOKEN__", self.server.token).replace('__ATLAS_ROOT_ID__', ROOT_ID), content_type="text/html; charset=utf-8")
-        elif self.path in ("/app.js", "/servo_motion.js", "/servos.js", "/style.css"):
+        elif self.path in ("/app.js", "/servo_motion.js", "/servos.js", "/stabilization.js", "/style.css"):
             kind = "text/javascript" if self.path.endswith(".js") else "text/css"
             self.reply((WEB / self.path[1:]).read_bytes(), content_type=kind + "; charset=utf-8")
         elif self.path == "/api/state":

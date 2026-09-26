@@ -18,6 +18,7 @@
 #include "atlas_analog.h"
 #include "atlas_pyro_policy.h"
 #include "atlas_status.h"
+#include "atlas_stabilization.h"
 #include <stdbool.h>
 #include <stdint.h>
 #define ATLAS_IO_PWM_CHANNELS (8U)
@@ -59,7 +60,8 @@ typedef enum
     ATLAS_IO_PWM_DISABLE, ATLAS_IO_GPIO_SET, ATLAS_IO_PYRO_ARM,
     ATLAS_IO_PYRO_DISARM, ATLAS_IO_PYRO_REQUEST,
     ATLAS_IO_BENCH_GPIO, /* Diagnostic image only, fixed 1 s logic-level pulse. */
-    ATLAS_IO_BENCH_SERVO_ENABLE, ATLAS_IO_BENCH_SERVO_SET /* ServoBench only. */
+    ATLAS_IO_BENCH_SERVO_ENABLE, ATLAS_IO_BENCH_SERVO_SET,
+    ATLAS_IO_BENCH_SERVO_SWEEP /* ServoBench only; one bounded 1 or 2 second cycle. */
 } AtlasIoCommandType;
 /** @brief Completely copied command; channels are ZERO-BASED, masks use bit 0 for connector 1. */
 typedef struct
@@ -70,6 +72,7 @@ typedef struct
         AtlasOutputConfiguration configuration;
         struct { uint8_t channel; uint16_t pulse_us; } pwm;
         struct { uint8_t channel; uint16_t minimum_us, maximum_us; } servo;
+        struct { uint8_t channel; uint16_t period_ms; } sweep;
         struct { uint8_t channel; bool high; } gpio;
         uint8_t channel_mask;
         uint8_t pyro_channel;
@@ -111,6 +114,7 @@ typedef struct
     bool reference_temperature_channel;
     bool external_switch, arm_supply_present, configured, emergency_latched;
     bool servo_ready;
+    AtlasStabilizationSnapshot stabilization;
 } AtlasIoSnapshot;
 /** @brief Initialize private DMA memory/calibration, then create the static owner.
  * @param hardware Initialized generated handles copied by value.
@@ -137,6 +141,21 @@ void AtlasIo_EmergencyStop(void);
  * Task/ISR safe, register-only; does not rearm after faults or affect pyro policy.
  * The owner publishes the stopped state on its next 5 ms cycle. */
 void AtlasIo_BenchServoStop(void);
+/** @brief Drop manual USB control without stopping autonomous stabilization. */
+void AtlasIo_BenchUsbLost(void);
+/** @brief Copy a new IMU sample from its sole sensor owner. @param sample Value to copy. */
+void AtlasIo_StabilizationSample(const AtlasStabilizationSample *sample);
+/** @brief Prepare a deliberate SD setting change with PWM stopped. @param operation
+ * 0 off, 1 on, 2 upright calibration, 3 direction mask. @param reverse Four bits.
+ * @param config Prepared record. @param token Cancellation epoch. @return Status. */
+AtlasStatus AtlasIo_StabilizationPrepare(uint32_t operation,uint32_t reverse,
+                                       AtlasStabilizationConfig *config,uint32_t *token);
+/** @brief Verify a pending save before media access. @param token Epoch.
+ * @param enabling Whether saved mode is enabled. @return Request is still current. */
+bool AtlasIo_StabilizationSaveCurrent(uint32_t token,bool enabling);
+/** @brief Publish boot/readback settings through an owner mailbox. @param config Record.
+ * @param token Save epoch. @param success Verified SD result. @param boot Startup load. */
+void AtlasIo_StabilizationSaved(const AtlasStabilizationConfig *config,uint32_t token,bool success,bool boot);
 /** @brief Internal board IRQ adapter for the additional D0TCM ECC monitor; no RTOS calls. */
 void AtlasIo_HandleDtcm0Irq(void);
 #endif

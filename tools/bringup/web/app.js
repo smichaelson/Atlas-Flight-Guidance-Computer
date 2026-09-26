@@ -15,6 +15,7 @@ const views = {
   links:['COMMUNICATIONS / 04','Across the link','Observe USB, BLE and the RFD900x serial modem.','Communications'],
   tests:['BENCH / 05','Test with intention','Run one explicit operation and inspect its result.','Test controls'],
   servos:['BENCH / 06','Motion, under control','Choose a precise angle for one KST X10 at a time, across its nominal ±50° travel.','Servo workbench'],
+  stabilization:['BENCH / 07','Keep pointing down','Four radial servos follow gravity. Atlas runs the loop, with or without USB.','Stabilization'],
   firmware:['MAINTENANCE / 06','Firmware, simplified','Verified updates through the same USB-C connection.','Firmware'],
   capture:['EVIDENCE / 07','The session record','Keep the measurements and the context together.','Session log']
 };
@@ -107,6 +108,7 @@ function render(v){
   const notice=$('notice');notice.className='notice'+(demoMode?' demo':v.blocked||networkFailed?' error':'');
   notice.textContent=networkFailed?'The local server is unavailable. Measurements and controls are no longer live.':v.updating?v.firmware.message:demoMode?'DEMO MODE · Every measurement is simulated. No hardware is connected and test controls cannot transmit.':v.blocked?v.blocked:good?'USB telemetry active · Battery-powered board · Bench measurements require physical qualification.':live?'USB open. Waiting for a fresh, recognized Atlas Bringup handshake and telemetry.':'Connect Atlas to see measurements, or explore the dashboard with clearly labelled demo data.';
   window.AtlasServos?.render(v);
+  window.AtlasStabilization?.render(v);
   $('output-profile').textContent=v.hello?.profile==='servo_bench'?'PYRO INHIBITED · SERVO BENCH':'PWM / PYRO INHIBITED';
   $('switch-overview').textContent=good&&s.power.available&&(!('t' in s.gpio)||age(s,s.gpio.t)<=500)?(s.gpio.switch?'HIGH · 1':'LOW · 0'):'—';
   $('sd-overview').textContent=good?(s.sd.card?(s.sd.mounted?'MOUNTED':'DETECTED'):'NO CARD'):'—';
@@ -180,12 +182,12 @@ function render(v){
 }
 let stateReadSerial=0, stateAppliedSerial=0;
 async function pollOnce(){
-  const serial=++stateReadSerial,servoView=currentView==='servos',next=await api(servoView?'servo-state':'state');
-  if(servoView&&currentView!=='servos')return; // History-free responses must not replace another view.
+  const serial=++stateReadSerial,servoView=['servos','stabilization'].includes(currentView),next=await api(servoView?'servo-state':'state');
+  if(servoView&&!['servos','stabilization'].includes(currentView))return; // Compact responses only belong in control views.
   if(serial<stateAppliedSerial)return; // An older HTTP response cannot roll back Stop/enable state.
   stateAppliedSerial=serial;state=next;networkFailed=false;render(state);
 }
-async function polling(){try{await pollOnce();}catch(error){networkFailed=true;if(state)render(state);else{$('notice').textContent='The local server is unavailable. Start Atlas Ground Station and reload.';}}finally{setTimeout(polling,currentView==='servos'?40:700);}}
+async function polling(){try{await pollOnce();}catch(error){networkFailed=true;if(state)render(state);else{$('notice').textContent='The local server is unavailable. Start Atlas Ground Station and reload.';}}finally{setTimeout(polling,['servos','stabilization'].includes(currentView)?40:700);}}
 async function ports(){try{const list=await api('ports');$('port-select').innerHTML='<option value="">Select the Atlas port</option>'+list.map(p=>`<option value="${esc(p.device)}">${esc(p.device+' · '+p.description)}</option>`).join('');}catch(error){toast(error.message);}}
 async function command(verb){
   let copy='';

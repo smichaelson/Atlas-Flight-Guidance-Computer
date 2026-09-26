@@ -101,7 +101,7 @@ window.AtlasServos = (() => {
   $('servo-stop').onclick=stop;
   function leaveStop(){
     halted=true;
-    if(capable()&&(active()||state.pending?.startsWith('servo ')||busy)){
+    if(capable()&&!state.status?.stabilization?.enabled&&(active()||state.pending?.startsWith('servo ')||busy)){
       fetch('/api/servo-stop',{method:'POST',headers:{'X-Atlas-Token':token,'Content-Type':'application/json'},body:'{}',keepalive:true}).catch(()=>{});
     }
   }
@@ -110,7 +110,7 @@ window.AtlasServos = (() => {
   function render(v){
     if(!v){paint();return;}
     if(generation!==v.generation){generation=v.generation;$('servo-confirm').checked=false;observedSeq=null;}
-    const s=v.status,valid=usable(s),cap=capable(),on=valid&&!!active(),policyOk=policy();
+    const s=v.status,valid=usable(s),cap=capable(),on=valid&&!!active()&&!s.stabilization?.active,policyOk=policy();
     if(s&&s.seq!==observedSeq){observedSeq=s.seq;observedAt=performance.now();}
     const pwm=valid?railValue(s,1):null;
     const voltageOk=finite(pwm)&&pwm>0&&pwm<=8.55&&age(s,s.power.t)<=100;
@@ -121,6 +121,7 @@ window.AtlasServos = (() => {
     $('servo-supply').textContent=number(pwm,3)+' V';
     $('servo-system').textContent=number(valid?railValue(s,0):null,3)+' V';
     $('servo-gate').textContent=!cap?(v.mode==='demo'?'SIMULATED PREVIEW · No hardware commands.':'ServoBench required. Angle selection remains available for local preview.'):
+      s?.stabilization?.enabled?'Stabilization owns the four servos. Disable it in the Stabilization tab before manual moves.':
       !policyOk?'Update to ServoBench 1.2.5 for direct position moves. Stop remains available.':
       !valid?'Need fresh telemetry. Stop all PWM remains available.':!s.servo.ready||!voltageOk?
       `Output blocked · PWM ${number(pwm,3)} V. Need a usable, nonzero PWM-supply ADC reading at or below 8.55 V and a healthy output monitor.`:

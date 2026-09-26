@@ -56,6 +56,36 @@ class ServoTests(unittest.TestCase):
             h=copy.deepcopy(self.h);h[key]=value
             with self.assertRaises(ValueError): validate(h)
 
+    def test_sweep_requires_capability_explicit_channel_confirmation_and_full_range(self):
+        self.h['servo_sweep']=True
+        self.station.ingest(self.h,time.monotonic())
+        self.servo(self.enable)
+        self.active()
+        body=dict(operation='sweep',channel=1,period_ms=2000,confirmed=True)
+        with self.assertRaises(ValueError):self.servo(body) # Narrow enabled envelope.
+        self.s['servo'].update(min_us=1000,max_us=2000)
+        self.station.ingest(self.s,time.monotonic())
+        for change in ({'confirmed':False},{'period_ms':3000},{'period_ms':True},{'channel':2}):
+            with self.assertRaises(ValueError):self.servo(dict(body,**change))
+        self.s['gpio']['switch']=1
+        self.station.ingest(self.s,time.monotonic())
+        with self.assertRaises(ValueError):self.servo(body)
+        self.s['gpio']['switch']=0
+        self.station.ingest(self.s,time.monotonic())
+        self.servo(body)
+        self.assertEqual(self.station.serial.writes[-1],b'2 servo sweep 1 2000\n')
+
+    def test_sweep_strict_wire_shape_and_legacy_rejection(self):
+        self.active()
+        self.s['servo'].update(min_us=1000,max_us=2000)
+        self.station.ingest(self.s,time.monotonic())
+        with self.assertRaises(ValueError):self.station.session.request('servo sweep 1 1000',time.monotonic(),True)
+        for verb in ('servo sweep 1 2001','servo sweep 0 1000','servo sweep 1 1000 extra'):
+            self.assertFalse(valid_command(verb))
+        for value in (1,'true',None):
+            h=copy.deepcopy(self.h);h['servo_sweep']=value
+            with self.assertRaises(ValueError):validate(h)
+
     def test_ordinary_bringup_cannot_enable(self):
         session=Session();session.accept(demo.hello(),1);session.accept(demo.status(),1)
         with self.assertRaises(ValueError): session.request('servo enable 1 1320 1720',1,True)

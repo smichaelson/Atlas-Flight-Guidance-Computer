@@ -30,7 +30,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     -I (Join-Path $bringupRoot 'Tests/services/mocks') -I (Join-Path $bringupRoot 'App/Inc') `
     (Join-Path $bringupRoot 'Tests/services/test_io.c') `
     (Join-Path $bringupRoot 'App/Src/atlas_pyro_policy.c') `
-    (Join-Path $bringupRoot 'App/Src/atlas_analog.c') -o (Join-Path $bringupOutput 'io.exe')
+    (Join-Path $bringupRoot 'App/Src/atlas_analog.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_stabilization.c') -lm -o (Join-Path $bringupOutput 'io.exe')
 if ($LASTEXITCODE -ne 0) { exit 2 }
 & (Join-Path $bringupOutput 'io.exe')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -69,7 +70,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     -I (Join-Path $bringupRoot 'Tests/services/mocks') -I (Join-Path $bringupRoot 'App/Inc') `
     (Join-Path $bringupRoot 'Tests/services/test_io.c') `
     (Join-Path $bringupRoot 'App/Src/atlas_pyro_policy.c') `
-    (Join-Path $bringupRoot 'App/Src/atlas_analog.c') -o (Join-Path $bringupOutput 'servo-io.exe')
+    (Join-Path $bringupRoot 'App/Src/atlas_analog.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_stabilization.c') -lm -o (Join-Path $bringupOutput 'servo-io.exe')
 if ($LASTEXITCODE -ne 0) { exit 2 }
 & (Join-Path $bringupOutput 'servo-io.exe')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -89,4 +91,24 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & node (Join-Path $bringupRoot 'Tests/bringup/test_buzzer_ui.js')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & node (Join-Path $bringupRoot 'Tests/bringup/test_servo_ui.js')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& gcc -std=c11 -Wall -Wextra -Werror -I (Join-Path $bringupRoot 'App/Inc') `
+    (Join-Path $bringupRoot 'Tests/bringup/test_stabilization.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_stabilization.c') -lm -o (Join-Path $bringupOutput 'stabilization.exe')
+if ($LASTEXITCODE -ne 0) { exit 2 }
+& (Join-Path $bringupOutput 'stabilization.exe')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& gcc -std=c11 -Wall -Wextra -Werror -DATLAS_BRINGUP=1 -DATLAS_SERVO_BENCH=1 `
+    -I (Join-Path $bringupRoot 'Tests/services/mocks') -I (Join-Path $bringupRoot 'App/Inc') `
+    -I (Join-Path $bringupRoot 'FATFS/App') -I (Join-Path $bringupRoot 'FATFS/Target') `
+    -I (Join-Path $bringupRoot 'Middlewares/Third_Party/FatFs/src') `
+    (Join-Path $bringupRoot 'Tests/services/test_storage_owner.c') `
+    (Join-Path $bringupRoot 'Tests/services/service_model.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_stabilization.c') -lm -o (Join-Path $bringupOutput 'stabilization-storage.exe')
+if ($LASTEXITCODE -ne 0) { exit 2 }
+& (Join-Path $bringupOutput 'stabilization-storage.exe')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $Python (Join-Path $bringupRoot 'Tests/bringup/test_stabilization_station.py')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& node (Join-Path $bringupRoot 'Tests/bringup/test_stabilization_ui.js')
 exit $LASTEXITCODE

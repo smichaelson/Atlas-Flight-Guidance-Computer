@@ -92,6 +92,12 @@ def validate(frame: object) -> dict:
                 raise ValueError('Invalid servo motion capability')
         if 'servo_direct' in frame and (frame['profile'] != 'servo_bench' or type(frame['servo_direct']) is not bool):
             raise ValueError('Invalid direct servo motion capability')
+        if 'servo_sweep' in frame and (frame['profile'] != 'servo_bench' or type(frame['servo_sweep']) is not bool):
+            raise ValueError('Invalid servo sweep capability')
+        if 'stabilization' in frame and (frame['profile'] != 'servo_bench' or
+                frame['stabilization'] is not True or frame.get('stabilization_layout') != 1 or
+                frame.get('stabilization_storage') != 'sd'):
+            raise ValueError('Invalid stabilization capability')
     elif kind == "reply":
         if (not _integer(frame.get("id"), 1) or not _integer(frame.get("status"), 0, 13) or
                 not _integer(frame.get("verified_bytes")) or
@@ -212,8 +218,24 @@ def validate(frame: object) -> dict:
                 raise ValueError("Invalid SD controller diagnostics")
         if frame['profile'] == 'servo_bench':
             servo, mask = frame.get('servo'), frame['gpio']['pwm']
+            stab = frame.get('stabilization')
+            if isinstance(stab,dict) and 'fault_detail' in stab and not _integer(stab['fault_detail'],0,10):
+                raise ValueError('Invalid stabilization fault detail')
+            autonomous = isinstance(stab, dict) and stab.get('active') == 1
+            if stab is not None:
+                if (not isinstance(stab, dict) or
+                        any(not _integer(stab.get(k), 0, 1) for k in
+                            ('enabled','calibrated','calibration_ready','active','saved','save_busy')) or
+                        not _integer(stab.get('state'),0,6) or not _integer(stab.get('reason'),0,9) or
+                        any(not _integer(stab.get(k),0,15) for k in ('limited','singular','reverse_mask')) or
+                        not _array(stab.get('up_mg'),3,signed=True) or
+                        any(abs(v)>1001 for v in stab['up_mg']) or
+                        (autonomous and (not stab['enabled'] or not stab['calibrated'] or not stab['saved'] or
+                                         stab['save_busy'] or stab['state']!=4 or mask!=0xC3 or not frame['gpio']['switch'])) or
+                        (not autonomous and stab['state']==4)):
+                    raise ValueError('Invalid stabilization state')
             if (frame.get('pyro_inhibited') is not True or not _integer(mask, 0, 255) or
-                    mask & (mask - 1) or not isinstance(servo, dict) or
+                    (not autonomous and mask & (mask - 1)) or not isinstance(servo, dict) or
                     not _integer(servo.get('ready'), 0, 1) or
                     not _integer(servo.get('remaining_ms'), 0, 3000) or
                     not _integer(servo.get('stop_reason'), 0, 5) or
@@ -223,7 +245,8 @@ def validate(frame: object) -> dict:
                 raise ValueError('Invalid ServoBench state')
             if 'target_us' in servo:
                 target=servo['target_us']
-                if (not _integer(target,0,2100) or (mask and not servo['min_us'] <= target <= servo['max_us']) or
+                if (not _integer(target,0,2100) or (mask and not autonomous and not servo['min_us'] <= target <= servo['max_us']) or
+                        (autonomous and (target!=0 or servo['min_us']!=1000 or servo['max_us']!=2000 or servo['remaining_ms']!=0)) or
                         (not mask and target != 0)):
                     raise ValueError('Invalid servo target')
             if 'stop_pwm_mv' in servo and not _integer(servo['stop_pwm_mv']):
@@ -283,6 +306,8 @@ class Decoder:
 
 def valid_command(verb: str) -> bool:
     """@brief Match the firmware allowlist, never arbitrary terminal text. @return Validity."""
+    if re.fullmatch(r'servo sweep [1-8] (1000|2000)', verb):
+        return True
     if verb in {"hello", "status", "beep", "march", "birthday", "stop", "uart", "spi", "sd mount", "sd read",
                 "sd test", "sd unmount", "ble profile", "ble data", "ble command", "ble ping",
                 "radio id", "radio ping"}:
@@ -294,6 +319,10 @@ def valid_command(verb: str) -> bool:
     if verb == "led 0" or re.fullmatch(r"gpio [0-7]", verb):
         return True
     if verb == 'servo stop':
+        return True
+    if verb in ('stabilize on','stabilize off'):
+        return True
+    if re.fullmatch(r'stabilize (?:calibrate|directions) (?:[0-9]|1[0-5])', verb):
         return True
     if re.fullmatch(r'servo enable [1-8] [0-9]{3,4} [0-9]{4}', verb):
         _, _, _, minimum, maximum = verb.split()
@@ -379,10 +408,14 @@ class Session:
         if not valid_command(verb):
             raise ValueError("Command is not in the diagnostic allowlist")
         servo = verb.startswith('servo ')
+        stabilization = verb.startswith('stabilize ')
+        if stabilization and (not self.hello or self.hello.get('stabilization') is not True or
+                self.hello.get('profile') != 'servo_bench' or self.hello.get('stabilization_layout') != 1):
+            raise ValueError('Install ServoBench 1.3.0 for stabilization')
         if servo and (not self.hello or self.hello.get('profile') != 'servo_bench' or
                       self.hello.get('servo_test') is not True):
             raise ValueError('Install the separate ServoBench firmware to use servo tests')
-        if verb == 'servo stop':
+        if verb in ('servo stop','stabilize off'):
             # OFF must remain available with stale telemetry or an outstanding command.
             # Firmware deasserts pins synchronously and fences older queued commands.
             if self.next_id > 0xFFFFFFFF:
@@ -399,8 +432,24 @@ class Session:
                 raise ValueError("MCU still has an outstanding operation; wait for it to finish")
         if self.next_id > 0xFFFFFFFF:
             raise ValueError("Command IDs exhausted; reconnect manually")
-        if self.status and self.status['gpio']['pwm'] and verb not in ('hello', 'status') and not verb.startswith('servo set '):
+        if self.status and self.status['gpio']['pwm'] and verb not in ('hello', 'status') and not verb.startswith(('servo set ', 'servo sweep ')):
             raise ValueError('Stop the servo before another bench operation')
+        if self.status and self.status.get('stabilization',{}).get('enabled') and not stabilization and verb not in ('hello','status'):
+            raise ValueError('Disable stabilization before manual tests or maintenance')
+        if stabilization:
+            s=self.status; st=s.get('stabilization',{})
+            if (now-self.received_at>1.0 or s['gpio']['switch'] or s['gpio']['pwm'] or
+                    st.get('save_busy') or not s['sd']['card'] or s['tasks']['fault']):
+                raise ValueError('SW2 must be OFF with PWM stopped, fresh telemetry and the SD card installed')
+            if verb=='stabilize on' and (not st.get('calibrated') or not st.get('saved') or
+                    s['power']['status'] or not s['power']['available'] or not s['power']['valid']&2 or
+                    age_ms(s['ms'],s['power']['t'])>100 or not 0<s['power']['mv'][1]<=8550 or
+                    not s['count'][1] or s['sample_status'][1]!=0 or age_ms(s['ms'],s['lsm']['t'])>100):
+                raise ValueError('Need saved upright calibration and healthy, fresh IMU/power data')
+            if verb.startswith('stabilize calibrate ') and not st.get('calibration_ready'):
+                raise ValueError('Hold Atlas still with USB-C up for one second before calibration')
+            if verb.startswith('stabilize directions ') and not st.get('calibrated'):
+                raise ValueError('Calibrate upright before saving directions')
         if servo:
             s = self.status
             if (self.hello.get('servo_pwm_max_mv') != 8550 or self.hello.get('servo_layout') != 1 or
@@ -415,6 +464,11 @@ class Session:
                 channel, pulse = int(parts[2]), int(parts[3])
                 if s['gpio']['pwm'] != 1 << (channel-1) or not s['servo']['min_us'] <= pulse <= s['servo']['max_us']:
                     raise ValueError('Enable this channel first and stay within its limits')
+            if parts[1] == 'sweep':
+                channel = int(parts[2])
+                if (self.hello.get('servo_sweep') is not True or s['gpio']['switch'] or
+                        s['gpio']['pwm'] != 1 << (channel-1) or s['servo']['min_us']>1000 or s['servo']['max_us']<2000):
+                    raise ValueError('Need sweep-capable firmware, SW2 OFF and this channel enabled for full nominal travel')
         if verb in {"march", "birthday"}:
             if self.hello.get("buzzer_melody") is not True or "buzzer" not in self.status:
                 raise ValueError("Install Bringup 1.1.1 or later for buzzer melody playback")
@@ -427,6 +481,7 @@ class Session:
                     [int(v) for v in verb.split()[1:]] != self.hello["uid"]):
                 raise ValueError("Firmware does not advertise software DFU for this UID")
             if (self.status["sd"]["mounted"] or self.status["gpio"]["outputs"] or self.status['gpio']['pwm'] or
+                    self.status.get('stabilization',{}).get('enabled') or self.status.get('stabilization',{}).get('save_busy') or
                     self.status["tasks"]["busy"] or self.status.get("buzzer", {}).get("playing")):
                 raise ValueError("Unmount SD and stop playback; wait for all tests and GPIO pulses to finish")
         self.pending = Pending(self.next_id, verb, now)

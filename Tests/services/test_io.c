@@ -29,6 +29,7 @@ static DMA_HandleTypeDef dmas[2];
 static ADC_HandleTypeDef adcs[2];
 static jmp_buf owner_loop_exit;
 static unsigned owner_cycles_remaining;
+static unsigned pwm_start_calls,pwm_start_failure;
 #if ATLAS_BRINGUP
 static AtlasUsbHealth bench_test_usb;
 bool AtlasUsb_GetHealth(AtlasUsbHealth *health) { *health=bench_test_usb;return true; }
@@ -76,7 +77,7 @@ GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port,uint16_t pin) { return (port->
 void HAL_GPIO_WritePin(GPIO_TypeDef *port,uint16_t pin,GPIO_PinState state)
 { if(state)port->ODR|=pin;else port->ODR&=~pin; }
 HAL_StatusTypeDef HAL_TIM_PWM_Start(TIM_HandleTypeDef *timer,uint32_t channel)
-{ assert(test_primask!=0U);timer->Instance->CCER|=1U<<channel;timer->Instance->CR1|=TIM_CR1_CEN;return HAL_OK; }
+{ assert(test_primask!=0U);if(++pwm_start_calls==pwm_start_failure)return HAL_ERROR;timer->Instance->CCER|=1U<<channel;timer->Instance->CR1|=TIM_CR1_CEN;return HAL_OK; }
 HAL_StatusTypeDef HAL_TIM_PWM_Stop(TIM_HandleTypeDef *timer,uint32_t channel)
 { timer->Instance->CCER&=~(1U<<channel);return HAL_OK; }
 HAL_StatusTypeDef HAL_DMA_Init(DMA_HandleTypeDef *dma) { dma->State=HAL_DMA_STATE_READY;return HAL_OK; }
@@ -117,6 +118,13 @@ static void fixture(void)
 {
 #if ATLAS_SERVO_BENCH
     servo_cancel_epoch=servo_seen_cancel=servo_started_ms=servo_changed_ms=servo_usb_session=0U;
+    servo_sweep_started_ms=0U;servo_sweep_period_ms=0U;servo_sweep_channel=0U;
+    memset(&stab_filter,0,sizeof(stab_filter));memset(&stab_sample,0,sizeof(stab_sample));
+    memset(&stab_commands,0,sizeof(stab_commands));
+    memset(&stab_config,0,sizeof(stab_config));memset(&stab_pending_config,0,sizeof(stab_pending_config));
+    stab_pending=stab_pending_success=stab_pending_boot=stab_save_busy=false;
+    stab_switch_released=stab_switch_high=stab_fault=false;
+    stab_pending_token=stab_switch_ms=stab_last_ms=0U;
 #endif
 #if ATLAS_BRINGUP
     bench_gpio_active=false;bench_gpio_started_ms=0U;
@@ -127,7 +135,7 @@ static void fixture(void)
     memset(test_adc,0,sizeof(test_adc));memset(adcs,0,sizeof(adcs));
     test_tick=1000U;test_permitted=true;emergency_latched=false;hardware_ready=true;started=true;
     configured_locked=false;pulse_active=pulse_complete=pulse_failed=false;test_abort_fails=false;
-    owner_cycles_remaining=0U;
+    owner_cycles_remaining=0U;pwm_start_calls=pwm_start_failure=0U;
 #if !ATLAS_SERVO_BENCH
     last_permitted=false;
 #endif
@@ -471,6 +479,168 @@ static void servo_cases(void)
     puts("PASS ServoBench: eight routes, direct targets/full range, timer phase retained, stop fence, USB epochs, 8550/8551mV boundary, ADC/fault cutoff, idle/wrap/30s expiry");
 }
 #endif
+
+#if ATLAS_SERVO_BENCH
+/* Advance both production services with live independent sensor and rail clocks. */
+static void stab_cycle(bool high,unsigned cycles)
+{
+    for(unsigned i=0;i<cycles;++i)
+    {
+        test_tick+=5U;servo_fresh();
+        if(high) EXT_SWITCH_GPIO_Port->IDR|=EXT_SWITCH_Pin;
+        else EXT_SWITCH_GPIO_Port->IDR&=~EXT_SWITCH_Pin;
+        io_inputs();
+        AtlasStabilizationSample sample={{0,-1,0},{0,0,0},test_tick,true};
+        AtlasIo_StabilizationSample(&sample);
+        io_stabilization_service(test_tick);io_bench_servo_service(test_tick);
+    }
+}
+static void servo_sweep_cases(void)
+{
+    for(unsigned period=1000;period<=2000;period+=1000)
+    {
+        fixture();test_tick=UINT32_MAX-800U;servo_fresh();
+        IoQueued enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={6U,1000U,2000U}});
+        assert(io_execute(&enable)==ATLAS_OK);
+        IoQueued sweep=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SWEEP,.arguments.sweep={6U,(uint16_t)period}});
+        assert(io_execute(&sweep)==ATLAS_OK && working.commanded_pwm_us[6]==1500);
+        assert(io_execute(&sweep)==ATLAS_ERROR_BUSY); /* Cannot restart an active waveform. */
+        const uint32_t start=test_tick,counter=TIM3->CNT,control=TIM3->CR1,update=TIM3->EGR;
+        uint16_t lo=1500,hi=1500;
+        for(unsigned elapsed=5;elapsed<3000;elapsed+=5)
+        {
+            test_tick=start+elapsed;servo_fresh();io_bench_servo_service(test_tick);
+            const uint16_t p=working.commanded_pwm_us[6];
+            assert(working.pwm_enabled_mask==64 && p>=1000 && p<=2000 && p==working.servo_target_us);
+            if(p<lo)lo=p;
+            if(p>hi)hi=p;
+            if(elapsed==period/4)assert(p==2000);
+            if(elapsed==period*3/4)assert(p==1000);
+            if(elapsed>=period)assert(p==1500);
+            assert(servo_changed_ms==start && servo_started_ms==start);
+            assert(TIM3->CNT==counter && TIM3->CR1==control && TIM3->EGR==update);
+        }
+        assert(lo==1000 && hi==2000);
+        test_tick=start+3000;servo_fresh();io_bench_servo_service(test_tick);
+        assert(!working.pwm_enabled_mask && !servo_sweep_period_ms && working.servo_stop_reason==2);
+    }
+    /* Every cancellation can occur during motion or the neutral hold. */
+    for(unsigned fault=0;fault<5;++fault)
+    {
+        fixture();servo_fresh();
+        IoQueued enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={6U,1000U,2000U}});
+        assert(io_execute(&enable)==ATLAS_OK);
+        IoQueued sweep=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SWEEP,.arguments.sweep={6U,2000U}});
+        assert(io_execute(&sweep)==ATLAS_OK);
+        test_tick+=500;servo_fresh();
+        if(fault==0)AtlasIo_BenchServoStop();
+        if(fault==1)bench_test_usb.dtr=false;
+        if(fault==2)working.analog.millivolts[1]=8551;
+        if(fault==3){EXT_SWITCH_GPIO_Port->IDR|=EXT_SWITCH_Pin;io_inputs();}
+        if(fault==4)AtlasIo_EmergencyStop();
+        io_bench_servo_service(test_tick);
+        assert(!working.pwm_enabled_mask && !servo_sweep_period_ms);
+    }
+    fixture();servo_fresh();
+    IoQueued enable=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={6U,1450U,1550U}});
+    assert(io_execute(&enable)==ATLAS_OK);
+    IoQueued sweep=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SWEEP,.arguments.sweep={6U,2000U}});
+    assert(io_execute(&sweep)==ATLAS_ERROR_ARGUMENT && !servo_sweep_period_ms);
+    working.servo_minimum_us=1000;working.servo_maximum_us=2000;
+    sweep.command.arguments.sweep.period_ms=3000;
+    assert(io_execute(&sweep)==ATLAS_ERROR_ARGUMENT);
+    sweep.command.arguments.sweep.period_ms=2000;
+    assert(io_execute(&sweep)==ATLAS_OK);
+    IoQueued set=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SET,.arguments.pwm={6U,1600U}});
+    assert(io_execute(&set)==ATLAS_OK && !servo_sweep_period_ms);
+    test_tick+=5;servo_fresh();io_bench_servo_service(test_tick);assert(working.commanded_pwm_us[6]==1600);
+    test_tick=servo_started_ms+27000U;servo_changed_ms=test_tick;servo_fresh();
+    sweep=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_SWEEP,.arguments.sweep={6U,2000U}});
+    assert(io_execute(&sweep)==ATLAS_ERROR_STATE && !servo_sweep_period_ms);
+    puts("PASS bounded onboard sweep: full range, neutral hold, tick wrap, unchanged 3s cutoff, no timer reset, stop/USB/power/SW2/emergency, bounds and manual override");
+}
+static void stabilization_cases(void)
+{
+    fixture();
+    AtlasStabilizationConfig c={.enabled=1,.upright={0,-1,0}};AtlasStabilization_Seal(&c);
+    AtlasIo_StabilizationSaved(&c,0,true,true);
+    stab_cycle(true,300);assert(working.stabilization.enabled && !working.stabilization.active);
+    assert(working.pwm_enabled_mask==0); /* Saved ON plus boot-high is never enough. */
+    stab_cycle(false,25);stab_cycle(true,25);
+    assert(working.stabilization.active && working.pwm_enabled_mask==0xC3);
+    assert(TIM1->CCER==0 && (TIM3->CCER&0x1111U)==0x1111U);
+    for(unsigned i=0;i<8;++i)assert(working.commanded_pwm_us[i]==((0xC3U&(1U<<i))?1500U:0U));
+    assert(!working.pyro.software_armed && !working.servo_ready);
+    const uint32_t cancel=servo_cancel_epoch;
+    bench_test_usb.configured=bench_test_usb.dtr=false;++bench_test_usb.session;
+    AtlasIo_BenchUsbLost();assert(servo_cancel_epoch==cancel);
+    stab_cycle(true,7000);assert(working.stabilization.active); /* >30 seconds, no USB or keepalive. */
+    IoQueued manual=servo_request((AtlasIoCommand){.type=ATLAS_IO_BENCH_SERVO_ENABLE,.arguments.servo={0,1000,2000}});
+    assert(io_execute(&manual)!=ATLAS_OK);
+    /* A stale producer stops all four even with command/result backpressure. */
+    test_tick+=101;servo_fresh();io_stabilization_service(test_tick);io_bench_servo_service(test_tick);
+    assert(!working.stabilization.active && working.pwm_enabled_mask==0 && working.stabilization.reason==7);
+    assert(working.stabilization.fault_detail==ATLAS_STAB_FAULT_STALE);
+    stab_cycle(true,100);assert(!working.stabilization.active && working.stabilization.fault_detail==ATLAS_STAB_FAULT_STALE);
+    stab_cycle(false,25);stab_cycle(true,25);assert(working.stabilization.active);
+    assert(working.stabilization.fault_detail==ATLAS_STAB_FAULT_NONE);
+    working.analog.millivolts[1]=8551;io_stabilization_service(test_tick);io_bench_servo_service(test_tick);
+    assert(!working.pwm_enabled_mask && working.stabilization.reason==4);
+    working.analog.millivolts[1]=7400;stab_cycle(true,100);assert(!working.pwm_enabled_mask);
+    stab_cycle(false,25);stab_cycle(true,25);assert(working.pwm_enabled_mask==0xC3);
+    AtlasIo_BenchServoStop();assert(TIM3->CCER==0);
+    stab_cycle(true,100);assert(!working.pwm_enabled_mask && working.stabilization.enabled);
+    stab_cycle(false,25);stab_cycle(true,25);assert(working.stabilization.active);
+    stab_cycle(false,1);assert(!working.pwm_enabled_mask); /* Falling edge has no debounce delay. */
+    stab_cycle(false,250);
+    AtlasStabilizationConfig prepared;uint32_t token;
+    assert(AtlasIo_StabilizationPrepare(2,3,&prepared,&token)==ATLAS_OK);
+    assert(prepared.enabled==0 && prepared.reverse_mask==3);
+    assert(AtlasIo_StabilizationSaveCurrent(token,false));
+    AtlasIo_BenchServoStop();assert(!AtlasIo_StabilizationSaveCurrent(token,false));
+    AtlasIo_StabilizationSaved(&prepared,token,true,false);
+    stab_cycle(false,1);assert(!working.stabilization.enabled && !working.stabilization.saved);
+    /* The explicit saved OFF path can deassert while SW2 is still high. */
+    fixture();AtlasIo_StabilizationSaved(&c,0,true,true);stab_cycle(false,250);stab_cycle(true,25);
+    assert(AtlasIo_StabilizationPrepare(0,0,&prepared,&token)==ATLAS_OK);
+    assert(prepared.enabled==0 && TIM3->CCER==0);
+    AtlasIo_StabilizationSaved(&prepared,token,true,false);stab_cycle(true,2);
+    assert(!working.stabilization.enabled && working.stabilization.saved && !working.pwm_enabled_mask);
+    fixture();AtlasIo_StabilizationSaved(&c,0,true,true);stab_cycle(false,250);pwm_start_failure=2;
+    stab_cycle(true,25);assert(emergency_latched && working.pwm_enabled_mask==0 && !working.stabilization.active);
+    for(unsigned i=0;i<8;++i)assert(working.commanded_pwm_us[i]==0);
+    fixture();AtlasIo_StabilizationSaved(&c,0,true,true);stab_cycle(false,250);stab_cycle(true,25);
+    assert(working.stabilization.active);AtlasIo_EmergencyStop();io_stop_all();
+    assert(!working.stabilization.active && working.stabilization.state==5 && !working.pwm_enabled_mask);
+    /* Direct positions and stop checks run at 200 Hz across tick wrap. */
+    fixture();AtlasIo_StabilizationSaved(&c,0,true,true);stab_cycle(false,250);stab_cycle(true,25);
+    test_tick=UINT32_MAX-2U;stab_last_ms=test_tick;servo_fresh();
+    stab_filter.up[0]=0;stab_filter.up[1]=-0.8660254f;stab_filter.up[2]=0.5f;
+    stab_filter.timestamp_ms=stab_sample.timestamp_ms=test_tick;
+    uint16_t expected[4],neutral[4]={1500,1500,1500,1500};uint32_t limited,singular;
+    assert(AtlasStabilization_Targets(&c,stab_filter.up,neutral,expected,&limited,&singular));
+    const uint32_t counter=TIM3->CNT,control=TIM3->CR1,update=TIM3->EGR,channels=TIM3->CCER;
+    for(unsigned n=0;n<4;++n)
+    {
+        test_tick+=1;servo_fresh();io_stabilization_service(test_tick);
+        for(unsigned i=0;i<4;++i)assert(working.commanded_pwm_us[stab_channels[i]]==1500);
+    }
+    test_tick+=1;servo_fresh();io_stabilization_service(test_tick);
+    for(unsigned i=0;i<4;++i)assert(working.commanded_pwm_us[stab_channels[i]]==expected[i]);
+    assert(expected[0]>1700); /* Full destination, no artificial small-step ramp. */
+    assert(TIM3->CNT==counter && TIM3->CR1==control && TIM3->EGR==update && TIM3->CCER==channels);
+    /* A delayed iteration uses only the newest destination, with no catch-up queue. */
+    test_tick+=250;servo_fresh();stab_filter.up[2]=-0.5f;
+    stab_filter.timestamp_ms=stab_sample.timestamp_ms=test_tick;
+    assert(AtlasStabilization_Targets(&c,stab_filter.up,neutral,expected,&limited,&singular));
+    io_stabilization_service(test_tick);
+    assert(working.stabilization.active && stab_last_ms==test_tick);
+    for(unsigned i=0;i<4;++i)assert(working.commanded_pwm_us[stab_channels[i]]==expected[i]);
+    test_tick+=5;servo_fresh();EXT_SWITCH_GPIO_Port->IDR&=~EXT_SWITCH_Pin;io_inputs();
+    io_stabilization_service(test_tick);assert(!working.stabilization.active && !working.pwm_enabled_mask);
+    puts("PASS autonomous IO: PCB mask/timer routes, boot-high inhibit, SW2 debounce/off, 35s USB-free operation, stale/rail trip and latch, stop fencing, calibration/save/off");
+}
+#endif
 static void analog_cases(void)
 {
     fixture();reference_valid=true;reference_vdda=3300U;reference_started_ms=test_tick;
@@ -512,6 +682,8 @@ int main(void)
 #if ATLAS_SERVO_BENCH
     servo_owner_loop_cases();
     servo_cases();
+    servo_sweep_cases();
+    stabilization_cases();
 #endif
 #else
     command_cases();inhibition_cases();pulse_cases();

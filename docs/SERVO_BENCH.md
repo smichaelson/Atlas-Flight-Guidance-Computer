@@ -1,5 +1,7 @@
 # KST X10 V8.0 servo workbench
 
+ServoBench **1.3.0** adds an autonomous [Stabilization tab](STABILIZATION.md): four radial servos, SD-saved settings and physical SW2 control. The single-channel USB/time limits below describe manual Servo workbench operation; stabilization has separate sensor, power and switch limits. See the [three-pass review](STABILIZATION_REVIEW.md).
+
 This is manual, inert bench testing with the separate **Atlas-ServoBench 1.2.5** profile. Ordinary Bringup still cannot enable PWM. Both profiles inhibit pyro, RGB and the flight-control hook. No servo is enabled by connecting, probing sensors, opening a tab, selecting a preview angle, or updating firmware.
 
 ## Physical setup
@@ -26,6 +28,12 @@ This reduces measurement noise; brief peaks are judged through the averaging win
 4. Click **−50°, −25°, 0°, +25° or +50°** for a single move. For any other whole-degree angle, type it and press **Move to angle** or Enter. Typing alone changes only the preview. One selection sends one bounded target; no drag stream, retained target queue, retries or keepalive is used. Off/demo selections cannot enable hardware. A session created by another client with narrower pulse limits cannot be exceeded.
 5. The models show amber for the local selection and green for the MCU's applied pulse. The firmware writes each destination directly; the KST controller performs the motion at its native response speed. There is no firmware speed ramp. At three seconds without another accepted move, PWM turns off; explicitly enable again for another move. Stop remains immediate. Servo power remains connected, so disabling PWM does not guarantee that the shaft releases.
 6. Choose **Stop all PWM** before changing channel or hardware. Verify the reported mask and pulse return to zero. A tab exit/hide attempts a stop; the firmware timeout remains independent of the browser. The servo page reads compact current snapshots every 40 ms; full sensor history and events remain in their usual tabs.
+
+## Timed diagnostic sweep (1.3.3)
+
+The diagnostic command `servo sweep <channel> <period_ms>` runs one full sinusoidal cycle around 1500 µs: zero → +50° → zero → −50° → zero. Only periods of 1000 or 2000 ms are accepted. It requires a separately enabled single channel with the full 1000–2000 µs envelope, SW2 OFF, and stabilization disabled. The capability is advertised as `servo_sweep:true`; the ground-station `/api/servo` operation `sweep` requires the same explicit channel approval and current control epoch as manual moves.
+
+The output owner computes the waveform from elapsed time every 5 ms, independent of USB command timing. After the cycle it holds 1500 µs until the existing three-second idle cutoff. It does not refresh that cutoff or the 30-second session budget. Stop, USB loss, power faults and SW2 ON interrupt it; a manual position command cancels the waveform. No timer reset or catch-up command sequence occurs during motion. This diagnostic isolates target timing from the IMU; it does not measure the electrical signal or horn position.
 
 ## Independent firmware limits
 

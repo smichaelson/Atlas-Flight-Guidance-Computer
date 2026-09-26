@@ -1,5 +1,7 @@
 # Atlas documentation
 
+- [Four-servo bench stabilization](STABILIZATION.md) and [three-pass review](STABILIZATION_REVIEW.md).
+
 ## Choose the question, not a reading list
 
 | I need to… | Read |

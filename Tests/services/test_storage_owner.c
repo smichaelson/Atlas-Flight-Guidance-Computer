@@ -47,9 +47,26 @@ FRESULT f_mount(FATFS *fs,const TCHAR *path,BYTE option)
     assert(option==1U && authorized);authorized=false;++mounts;current=present;
     return current?FR_OK:FR_NOT_READY;
 }
+#if ATLAS_SERVO_BENCH
+static bool stab_authorized=true,stab_saved_ok,stab_saved_boot;
+static AtlasStabilizationConfig stab_saved_config;
+bool AtlasIo_StabilizationSaveCurrent(uint32_t token,bool enabling)
+{ (void)enabling;return stab_authorized && token==42U; }
+void AtlasIo_StabilizationSaved(const AtlasStabilizationConfig *c,uint32_t token,bool success,bool boot)
+{ (void)token;stab_saved_ok=success;stab_saved_boot=boot;stab_saved_config=*c; }
+#endif
 FRESULT f_open(FIL *file,const TCHAR *path,BYTE mode)
 {
     assert(current);
+#if ATLAS_SERVO_BENCH
+    if(strcmp(path,"0:/ASTAB.CFG")==0)
+    {
+        assert(mode==(FA_WRITE|FA_CREATE_ALWAYS) || mode==FA_READ);
+        if(mode!=FA_READ)file_length=0U;
+        else if(file_length==0U)return FR_NO_FILE;
+        ++opens;memset(file,0,sizeof(*file));file->obj.objsize=file_length;return FR_OK;
+    }
+#endif
 #if ATLAS_BRINGUP
     if(strcmp(path,"0:/ATLASCHK.TST")==0)
     {
@@ -209,8 +226,52 @@ static void self_test_cases(void)
         if(failure==1U)assert(writes==0U && opens==0U); /* Existing bytes untouched. */
     }
     fail_close=false;fixture();TestRunTask(2U,NULL);
+#if ATLAS_SERVO_BENCH
+    assert(mounts==1U && writes==0U && !published_health.mounted); /* Optional settings read only. */
+#else
     assert(mounts==0U && writes==0U && !published_health.mounted); /* No boot probe/write. */
+#endif
     puts("Bring-up storage: explicit mount, exclusive 1024-byte test, no overwrite/retry, partial/sync/compare/close failures PASS");
+}
+#endif
+
+#if ATLAS_SERVO_BENCH
+static void stabilization_storage_cases(void)
+{
+    for(unsigned failure=0;failure<9U;++failure)
+    {
+        fixture();corrupt_read=short_read=fail_close=false;stab_authorized=true;stab_saved_ok=false;
+        AtlasStabilizationConfig c={.enabled=1,.upright={0,-1,0}};AtlasStabilization_Seal(&c);
+        StorageItem item={.request={.operation=ATLAS_STORAGE_STABILIZATION_SAVE,.length=64,.authorization=42}};
+        memcpy(item.request.data,&c,sizeof(c));
+        if(failure==1)short_write=true;
+        if(failure==2)fail_sync=true;
+        if(failure==3)corrupt_read=true;
+        if(failure==4)short_read=true;
+        if(failure==5)fail_close=true;
+        if(failure==6)present=false;
+        if(failure==7)stab_authorized=false;
+        if(failure==8)item.request.data[0]^=1U;
+        AtlasStorageResult result;storage_execute(&item,&result);
+        if(!failure)
+        {
+            assert(result.status==ATLAS_OK && result.verified_bytes==64 && stab_saved_ok && !stab_saved_boot);
+            assert(memcmp(&c,&stab_saved_config,sizeof(c))==0 && !health.mounted);
+            const unsigned before=writes;
+            storage_stabilization_boot();
+            assert(stab_saved_ok && stab_saved_boot && writes==before && !health.mounted);
+            file_data[7]^=1;storage_stabilization_boot();assert(!stab_saved_ok);
+        }
+        else assert(result.status!=ATLAS_OK && result.verified_bytes==0 && !stab_saved_ok);
+        if(failure>=6)assert(writes==0U);
+    }
+    fixture();const char *names[]={"ASTAB.CFG","astab.cfg","AsTaB.CfG"};
+    for(unsigned i=0;i<3;++i)
+    {
+        AtlasStorageRequest r={.operation=ATLAS_STORAGE_APPEND,.length=1};strcpy(r.filename,names[i]);
+        assert(AtlasStorage_Submit(&r,NULL)==ATLAS_ERROR_UNSUPPORTED);
+    }
+    puts("PASS stabilization persistence: exact synced/readback record, cold boot load, CRC rejection, short/corrupt/sync/close/missing-card/cancel failures, reserved file protection");
 }
 #endif
 /** @brief Run deterministic storage-service checks. @return Zero when all pass. */
@@ -225,6 +286,9 @@ int main(void)
     assert(uxQueueMessagesWaiting(requests)==0U); /* Fifth request completed NOT_READY without touching card. */
     AtlasStorageResult result={0};while(AtlasStorage_Receive(&result)){}
     assert(result.status==ATLAS_ERROR_NOT_READY);
+#endif
+#if ATLAS_SERVO_BENCH
+    stabilization_storage_cases();
 #endif
     puts("Storage owner: UTC/leap dates, partial update invalidation, copied requests, append and backpressure/removal PASS");
     return 0;

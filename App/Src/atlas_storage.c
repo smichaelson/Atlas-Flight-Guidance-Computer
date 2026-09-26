@@ -14,6 +14,9 @@
  */
 #include "atlas_storage.h"
 #include "atlas_build.h"
+#if ATLAS_SERVO_BENCH
+#include "atlas_io.h"
+#endif
 #include "fatfs.h"
 #include "FreeRTOS.h"
 #include "queue.h"
@@ -194,6 +197,68 @@ static FRESULT storage_self_test(AtlasStorageResult *result)
 }
 #endif
 
+#if ATLAS_SERVO_BENCH
+/** @brief Read exactly one CRC-checked configuration, leaving the volume ownership unchanged.
+ * @param config Output. @return Filesystem/record result. */
+static FRESULT storage_stabilization_read(AtlasStabilizationConfig *config)
+{
+    FIL file; UINT got=0U; uint8_t bytes[ATLAS_STAB_CONFIG_BYTES+1U];
+    FRESULT fs=f_open(&file,"0:/" ATLAS_STAB_CONFIG_FILE,FA_READ);
+    if(fs!=FR_OK) return fs;
+    fs=f_read(&file,bytes,sizeof(bytes),&got);
+    const FRESULT close_status=f_close(&file);
+    if(fs==FR_OK) fs=close_status;
+    if(fs!=FR_OK) return fs;
+    if(got!=sizeof(*config)) return FR_INVALID_OBJECT;
+    memcpy(config,bytes,sizeof(*config));
+    return AtlasStabilization_ConfigValid(config)?FR_OK:FR_INVALID_OBJECT;
+}
+/** @brief Save only the dedicated settings file, sync, close and verify by rereading.
+ * @param request Copied record/epoch. @param result Completion. @return File outcome. */
+static FRESULT storage_stabilization_save(const AtlasStorageRequest *request,AtlasStorageResult *result)
+{
+    AtlasStabilizationConfig config,check={0};
+    memcpy(&config,request->data,sizeof(config));
+    FRESULT fs=FR_INVALID_OBJECT;
+    if(AtlasStabilization_ConfigValid(&config) &&
+       AtlasIo_StabilizationSaveCurrent(request->authorization,config.enabled!=0U))
+    {
+        const bool was_mounted=health.mounted;
+        fs=health.mounted?FR_OK:storage_mount();
+        if(fs==FR_OK && !AtlasIo_StabilizationSaveCurrent(request->authorization,config.enabled!=0U)) fs=FR_DENIED;
+        if(fs==FR_OK)
+        {
+            FIL file; UINT wrote=0U;
+            fs=f_open(&file,"0:/" ATLAS_STAB_CONFIG_FILE,FA_WRITE|FA_CREATE_ALWAYS);
+            if(fs==FR_OK)
+            {
+                fs=f_write(&file,&config,sizeof(config),&wrote);
+                if(fs==FR_OK && wrote!=sizeof(config)) fs=FR_DENIED;
+                if(fs==FR_OK) fs=f_sync(&file);
+                const FRESULT closed=f_close(&file);
+                if(fs==FR_OK) fs=closed;
+            }
+        }
+        if(fs==FR_OK) fs=storage_stabilization_read(&check);
+        if(fs==FR_OK && (memcmp(&config,&check,sizeof(config))!=0 || !BSP_SD_IsMediaCurrent() ||
+                        !AtlasIo_StabilizationSaveCurrent(request->authorization,config.enabled!=0U))) fs=FR_INVALID_OBJECT;
+        if(!was_mounted) storage_unmount();
+    }
+    AtlasIo_StabilizationSaved(&check,request->authorization,fs==FR_OK,false);
+    if(fs==FR_OK) result->verified_bytes=sizeof(config);
+    return fs;
+}
+/** @brief Load optional saved mode once at startup, never write or format on boot. */
+static void storage_stabilization_boot(void)
+{
+    AtlasStabilizationConfig config={0};
+    FRESULT fs=storage_mount();
+    if(fs==FR_OK) fs=storage_stabilization_read(&config);
+    storage_unmount();
+    AtlasIo_StabilizationSaved(&config,0U,fs==FR_OK,true);
+}
+#endif
+
 /** @brief Execute one copied request. @param item Request/ticket. @param result Output. */
 static void storage_execute(const StorageItem *item, AtlasStorageResult *result)
 {
@@ -209,6 +274,9 @@ static void storage_execute(const StorageItem *item, AtlasStorageResult *result)
     if (request->operation == ATLAS_STORAGE_MOUNT) fs = storage_mount();
     else if (request->operation == ATLAS_STORAGE_UNMOUNT) storage_unmount();
     else if (request->operation == ATLAS_STORAGE_SET_UTC) result->status = storage_set_utc(&request->utc);
+#if ATLAS_SERVO_BENCH
+    else if(request->operation==ATLAS_STORAGE_STABILIZATION_SAVE) fs=storage_stabilization_save(request,result);
+#endif
     else if (!health.mounted) fs = FR_NOT_READY;
 #if ATLAS_BRINGUP
     else if (request->operation == ATLAS_STORAGE_SELF_TEST) fs = storage_self_test(result);
@@ -257,6 +325,9 @@ static void storage_task(void *argument)
     const FRESULT initial = ATLAS_BRINGUP ? FR_NOT_READY : storage_mount();
     health.filesystem_result = (uint8_t)initial;
     health.last_status = initial == FR_OK ? ATLAS_OK : ATLAS_ERROR_NOT_READY;
+#if ATLAS_SERVO_BENCH
+    storage_stabilization_boot();
+#endif
     for (;;)
     {
         if (health.mounted && !BSP_SD_IsMediaCurrent())
@@ -320,11 +391,35 @@ AtlasStatus AtlasStorage_Submit(const AtlasStorageRequest *request, uint32_t *ti
     StorageItem item;
     if (request == NULL) return ATLAS_ERROR_NULL;
     if (!storage_context()) return ATLAS_ERROR_STATE;
-    if ((unsigned)request->operation > (unsigned)ATLAS_STORAGE_SELF_TEST) return ATLAS_ERROR_ARGUMENT;
+    if ((unsigned)request->operation > (unsigned)ATLAS_STORAGE_STABILIZATION_SAVE) return ATLAS_ERROR_ARGUMENT;
+    if(request->operation==ATLAS_STORAGE_STABILIZATION_SAVE)
+    {
+#if ATLAS_SERVO_BENCH
+        AtlasStabilizationConfig config;
+        if(request->length!=sizeof(config)) return ATLAS_ERROR_ARGUMENT;
+        memcpy(&config,request->data,sizeof(config));
+        if(!AtlasStabilization_ConfigValid(&config) ||
+           !AtlasIo_StabilizationSaveCurrent(request->authorization,config.enabled!=0U)) return ATLAS_ERROR_STATE;
+#else
+        return ATLAS_ERROR_UNSUPPORTED;
+#endif
+    }
     if (!ATLAS_BRINGUP && request->operation == ATLAS_STORAGE_SELF_TEST) return ATLAS_ERROR_UNSUPPORTED;
     if ((request->operation == ATLAS_STORAGE_READ || request->operation == ATLAS_STORAGE_APPEND) &&
         (!storage_filename_valid(request->filename) || request->length == 0U ||
          request->length > ATLAS_STORAGE_DATA_CAPACITY)) return ATLAS_ERROR_ARGUMENT;
+    if(request->operation==ATLAS_STORAGE_APPEND)
+    {
+        bool reserved=true;
+        const char name[]="ASTAB.CFG";
+        for(unsigned i=0U;i<sizeof(name);++i)
+        {
+            char ch=request->filename[i];
+            if(ch>='a' && ch<='z') ch=(char)(ch-'a'+'A');
+            if(ch!=name[i]) { reserved=false; break; }
+        }
+        if(reserved) return ATLAS_ERROR_UNSUPPORTED;
+    }
     if (request->operation == ATLAS_STORAGE_SET_UTC && !storage_utc_valid(&request->utc))
         return ATLAS_ERROR_ARGUMENT;
     item.request = *request;

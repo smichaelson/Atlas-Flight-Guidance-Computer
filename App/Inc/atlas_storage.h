@@ -27,7 +27,8 @@ typedef struct
     uint8_t month, day, hour, minute, second;
 } AtlasUtc;
 
-/** @brief Deliberate media actions; no format, delete, truncate or raw-sector API. */
+/** @brief Deliberate media actions; no format, delete or raw-sector API.
+ * Only stabilization save replaces its dedicated record; general writes append. */
 typedef enum
 {
     ATLAS_STORAGE_MOUNT = 0,
@@ -35,7 +36,8 @@ typedef enum
     ATLAS_STORAGE_READ,
     ATLAS_STORAGE_APPEND,
     ATLAS_STORAGE_SET_UTC,
-    ATLAS_STORAGE_SELF_TEST /* Bringup image only: exclusive-create, sync, reopen/compare. */
+    ATLAS_STORAGE_SELF_TEST, /* Bringup image only: exclusive-create, sync, reopen/compare. */
+    ATLAS_STORAGE_STABILIZATION_SAVE /* ServoBench: only the dedicated ASTAB.CFG record. */
 } AtlasStorageOperation;
 
 /** @brief Request copied on submission; root-directory 8.3 filename only. */
@@ -44,6 +46,7 @@ typedef struct
     AtlasStorageOperation operation;
     char filename[13];
     uint32_t offset;
+    uint32_t authorization; /**< Stabilization cancellation epoch, never a general write permission. */
     uint16_t length;
     uint8_t data[ATLAS_STORAGE_DATA_CAPACITY];
     AtlasUtc utc;

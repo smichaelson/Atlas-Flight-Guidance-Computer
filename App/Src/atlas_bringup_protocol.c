@@ -96,6 +96,17 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
     }
     /* Parsed everywhere so ordinary Bringup explicitly returns UNSUPPORTED.
      * Only ServoBench compiles an executor; no generic PWM/pyro writes exist. */
+    if(strcmp(token[1],"stabilize")==0)
+    {
+        parsed.operation=ATLAS_BENCH_STABILIZATION;
+        if(count==3U && strcmp(token[2],"off")==0) parsed.argument[0]=0U;
+        else if(count==3U && strcmp(token[2],"on")==0) parsed.argument[0]=1U;
+        else if(count==4U && (strcmp(token[2],"calibrate")==0 || strcmp(token[2],"directions")==0) &&
+                bench_number(token[3],&parsed.argument[1]) && parsed.argument[1]<=15U)
+            parsed.argument[0]=strcmp(token[2],"calibrate")==0?2U:3U;
+        else return false;
+        *command=parsed; return true;
+    }
     if (strcmp(token[1], "servo") == 0)
     {
         if (count == 3U && strcmp(token[2], "stop") == 0)
@@ -109,6 +120,11 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
                  bench_number(token[3], &parsed.argument[0]) && parsed.argument[0] >= 1U && parsed.argument[0] <= 8U &&
                  bench_number(token[4], &parsed.argument[1]) && parsed.argument[1] >= 900U && parsed.argument[1] <= 2100U)
             parsed.operation = ATLAS_BENCH_SERVO_SET;
+        else if (count == 5U && strcmp(token[2], "sweep") == 0 &&
+                 bench_number(token[3], &parsed.argument[0]) && parsed.argument[0] >= 1U && parsed.argument[0] <= 8U &&
+                 bench_number(token[4], &parsed.argument[1]) &&
+                 (parsed.argument[1] == 1000U || parsed.argument[1] == 2000U))
+            parsed.operation = ATLAS_BENCH_SERVO_SWEEP;
         else return false;
         *command = parsed;
         return true;

@@ -65,6 +65,12 @@ void AtlasBuzzer_Stop(AtlasBuzzer *buzzer)
 }
 void AtlasIo_EmergencyStop(void) { ++dfu_stops; }
 void AtlasIo_BenchServoStop(void) { test_io.pwm_enabled_mask = 0U; }
+void AtlasIo_BenchUsbLost(void) { if(!test_io.stabilization.enabled) AtlasIo_BenchServoStop(); }
+AtlasStatus AtlasIo_StabilizationPrepare(uint32_t op,uint32_t reverse,AtlasStabilizationConfig *c,uint32_t *token)
+{ (void)op;(void)reverse;(void)c;(void)token;return ATLAS_ERROR_NOT_READY; }
+void AtlasIo_StabilizationSaved(const AtlasStabilizationConfig *c,uint32_t token,bool success,bool boot)
+{ (void)c;(void)token;(void)success;(void)boot; }
+
 void AtlasBoot_RequestDfu(void) { ++dfu_resets; }
 bool AtlasIo_GetSnapshot(AtlasIoSnapshot *snapshot)
 {
@@ -83,7 +89,8 @@ bool AtlasUsb_GetHealth(AtlasUsbHealth *health)
 }
 AtlasStatus AtlasIo_Submit(const AtlasIoCommand *command, uint32_t *ticket)
 {
-    assert(command->type == ATLAS_IO_BENCH_GPIO || command->type == ATLAS_IO_BENCH_SERVO_ENABLE || command->type == ATLAS_IO_BENCH_SERVO_SET);
+    assert(command->type == ATLAS_IO_BENCH_GPIO || command->type == ATLAS_IO_BENCH_SERVO_ENABLE ||
+           command->type == ATLAS_IO_BENCH_SERVO_SET || command->type == ATLAS_IO_BENCH_SERVO_SWEEP);
     last_io_request = *command;
     ++submitted_gpio;
     *ticket = 41U;
@@ -445,8 +452,12 @@ int main(void)
     pending=BENCH_PENDING_NONE;
     assert(AtlasBench_Parse("107 servo set 8 1600", &command));bench_dispatch(&command);
     assert(pending==BENCH_PENDING_GPIO && last_io_request.type==ATLAS_IO_BENCH_SERVO_SET && last_io_request.arguments.pwm.pulse_us==1600U);
+    pending=BENCH_PENDING_NONE;
+    assert(AtlasBench_Parse("108 servo sweep 8 2000", &command));bench_dispatch(&command);
+    assert(pending==BENCH_PENDING_GPIO && last_io_request.type==ATLAS_IO_BENCH_SERVO_SWEEP &&
+           last_io_request.arguments.sweep.channel==7U && last_io_request.arguments.sweep.period_ms==2000U);
     pending=BENCH_PENDING_SD;watchdog_fault=1U;test_io.pwm_enabled_mask=128U;
-    assert(AtlasBench_Parse("108 servo stop", &command));bench_dispatch(&command);
+    assert(AtlasBench_Parse("109 servo stop", &command));bench_dispatch(&command);
     assert(test_io.pwm_enabled_mask==0U && pending==BENCH_PENDING_SD); /* OFF bypasses busy/fault without losing the old operation. */
 #else
     assert(pending==BENCH_PENDING_NONE && reply_ring[reply_head].status==ATLAS_ERROR_UNSUPPORTED);

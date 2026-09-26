@@ -7,7 +7,9 @@
  * - bench_console_task(): frames allowlisted USB requests and publishes JSON lines.
  * - bench_watchdog_task(): supervises task progress, not expected component absence.
  * - bench_status(): serializes real measurements, ages, counters and explicit inhibits.
- * No automatic device probe, SD write, RF transmission, NVM save or actuation occurs.
+ * Ordinary Bringup performs no automatic probes or actuation. ServoBench probes
+ * the IMU at boot for its explicitly saved, SW2-gated stabilization mode.
+ * Settings writes require a deliberate request; no automatic RF transmission occurs.
  */
 #include "atlas_bringup.h"
 #include "atlas_build.h"
@@ -328,6 +330,17 @@ static void bench_sample(void)
                 s->lsm6dsv16b_status =
                     AtlasLsm6dsv16b_ReadSample(&bench_board->lsm6dsv16b, &s->lsm6dsv16b);
             bench_sample_result(1U, s->lsm6dsv16b_status, ready);
+#if ATLAS_SERVO_BENCH
+            if(ready || s->lsm6dsv16b_status!=ATLAS_OK)
+            {
+                const AtlasLsm6dsv16bSample *lsm=&s->lsm6dsv16b;
+                const AtlasStabilizationSample sample={
+                    {lsm->accel_x_g,lsm->accel_y_g,lsm->accel_z_g},
+                    {lsm->gyro_x_dps,lsm->gyro_y_dps,lsm->gyro_z_dps},
+                    lsm->timestamp_ms,s->lsm6dsv16b_status==ATLAS_OK};
+                AtlasIo_StabilizationSample(&sample);
+            }
+#endif
         }
     }
     if ((uint32_t)(now - last_mmc) >= 100U && bench_board->init.mmc5983ma == ATLAS_OK)
@@ -508,6 +521,10 @@ static void bench_owner_task(void *argument)
 {
     (void)argument;
     bench_startup_start();
+#if ATLAS_SERVO_BENCH
+    /* Required for saved autonomous bench mode, including battery-only startup. */
+    (void)AtlasBoard_ProbeModule(bench_board,ATLAS_BOARD_LSM);
+#endif
     for (;;)
     {
         bench_melody_service();
@@ -618,8 +635,9 @@ static void bench_hello(void)
     AtlasBench_JsonRaw(&json, ",\"pwm_pyro_inhibited\":false,\"servo_test\":true");
     bench_field(&json, "servo_pwm_max_mv", ATLAS_IO_SERVO_MAX_MV);
     bench_field(&json, "servo_layout", ATLAS_IO_SERVO_LAYOUT);
-    AtlasBench_JsonRaw(&json, ",\"servo_direct\":true");
+    AtlasBench_JsonRaw(&json, ",\"servo_direct\":true,\"servo_sweep\":true");
     bench_field(&json, "servo_adc_samples", ATLAS_IO_SERVO_ADC_SAMPLES);
+    AtlasBench_JsonRaw(&json, ",\"stabilization\":true,\"stabilization_layout\":1,\"stabilization_storage\":\"sd\"");
 #else
     AtlasBench_JsonRaw(&json, ",\"pwm_pyro_inhibited\":true,\"servo_test\":false");
 #endif
@@ -878,6 +896,23 @@ static void bench_status(void)
     }
     AtlasBench_JsonRaw(&j, "]");
 #endif
+#if ATLAS_SERVO_BENCH
+    AtlasBench_JsonRaw(&j,"},\"stabilization\":{\"state\":");
+    AtlasBench_JsonU32(&j,io.stabilization.state);
+    bench_field(&j,"enabled",io.stabilization.enabled?1U:0U);
+    bench_field(&j,"calibrated",io.stabilization.calibrated?1U:0U);
+    bench_field(&j,"calibration_ready",io.stabilization.calibration_ready?1U:0U);
+    bench_field(&j,"active",io.stabilization.active?1U:0U);
+    bench_field(&j,"saved",io.stabilization.saved?1U:0U);
+    bench_field(&j,"save_busy",io.stabilization.save_busy?1U:0U);
+    bench_field(&j,"reason",io.stabilization.reason);
+    bench_field(&j,"limited",io.stabilization.limited_mask);
+    bench_field(&j,"singular",io.stabilization.singular_mask);
+    bench_field(&j,"reverse_mask",io.stabilization.reverse_mask);
+    bench_field(&j,"fault_detail",io.stabilization.fault_detail);
+    AtlasBench_JsonRaw(&j,",\"up_mg\":");
+    bench_vector(&j,io.stabilization.up[0],io.stabilization.up[1],io.stabilization.up[2],1000U);
+#endif
     AtlasBench_JsonRaw(&j, "},\"led\":{\"commanded\":");
     AtlasBench_JsonU32(&j, b->led_commanded);
     bench_field(&j, "gates", b->led_gates);
@@ -1001,6 +1036,7 @@ static bool bench_dfu_ready(void)
     return !worker_busy && !melody_active && watchdog_fault == 0U && pending == BENCH_PENDING_NONE &&
            AtlasIo_GetSnapshot(&io) && AtlasStorage_GetHealth(&sd) &&
            io.pwm_enabled_mask == 0U && !io.pyro.software_armed && io.gpio_commanded_high == 0U &&
+           !io.stabilization.enabled && !io.stabilization.save_busy &&
            !sd.mounted;
 }
 
@@ -1017,6 +1053,8 @@ static void bench_dispatch(const AtlasBenchCommand *command)
         return;
     }
     last_id = command->id;
+    if(command->operation==ATLAS_BENCH_STABILIZATION && command->argument[0]==0U)
+        AtlasIo_BenchServoStop(); /* OFF cuts immediately, including a busy save/worker. */
     if (command->operation == ATLAS_BENCH_SERVO_STOP)
     {
 #if ATLAS_SERVO_BENCH
@@ -1073,7 +1111,35 @@ static void bench_dispatch(const AtlasBenchCommand *command)
     }
     pending_id = command->id;
     pending_epoch = link_epoch;
-    if (command->operation == ATLAS_BENCH_SERVO_ENABLE || command->operation == ATLAS_BENCH_SERVO_SET)
+    AtlasIoSnapshot control_io={0};
+    if(AtlasIo_GetSnapshot(&control_io) && control_io.stabilization.enabled &&
+       command->operation!=ATLAS_BENCH_STABILIZATION)
+    {
+        reply.status=ATLAS_ERROR_BUSY;
+        bench_text(reply.detail,sizeof(reply.detail),"Disable stabilization before manual tests or sensor maintenance");
+        bench_reply(&reply); return;
+    }
+    if(command->operation==ATLAS_BENCH_STABILIZATION)
+    {
+#if ATLAS_SERVO_BENCH
+        AtlasStorageRequest request={.operation=ATLAS_STORAGE_STABILIZATION_SAVE};
+        AtlasStabilizationConfig config;
+        reply.status=AtlasIo_StabilizationPrepare(command->argument[0],command->argument[1],&config,&request.authorization);
+        if(reply.status==ATLAS_OK)
+        {
+            request.length=sizeof(config); memcpy(request.data,&config,sizeof(config));
+            reply.status=AtlasStorage_Submit(&request,&pending_ticket);
+            if(reply.status==ATLAS_OK) pending=BENCH_PENDING_SD;
+            else AtlasIo_StabilizationSaved(NULL,request.authorization,false,false);
+        }
+        if(reply.status!=ATLAS_OK)
+            bench_text(reply.detail,sizeof(reply.detail),"Settings not saved: SW2 must be OFF; calibrate stationary upright with SD installed");
+#else
+        reply.status=ATLAS_ERROR_UNSUPPORTED;
+#endif
+    }
+    else if (command->operation == ATLAS_BENCH_SERVO_ENABLE || command->operation == ATLAS_BENCH_SERVO_SET ||
+             command->operation == ATLAS_BENCH_SERVO_SWEEP)
     {
 #if ATLAS_SERVO_BENCH
         AtlasIoCommand request = {0};
@@ -1083,6 +1149,12 @@ static void bench_dispatch(const AtlasBenchCommand *command)
             request.arguments.servo.channel = (uint8_t)(command->argument[0] - 1U);
             request.arguments.servo.minimum_us = (uint16_t)command->argument[1];
             request.arguments.servo.maximum_us = (uint16_t)command->argument[2];
+        }
+        else if(command->operation==ATLAS_BENCH_SERVO_SWEEP)
+        {
+            request.type=ATLAS_IO_BENCH_SERVO_SWEEP;
+            request.arguments.sweep.channel=(uint8_t)(command->argument[0]-1U);
+            request.arguments.sweep.period_ms=(uint16_t)command->argument[1];
         }
         else
         {
@@ -1184,6 +1256,8 @@ static void bench_results(void)
         AtlasBench_JsonInit(&detail, reply.detail, sizeof(reply.detail));
         AtlasBench_JsonRaw(&detail, "FatFs=");
         AtlasBench_JsonU32(&detail, storage.filesystem_result);
+        if(storage.operation==ATLAS_STORAGE_STABILIZATION_SAVE)
+            AtlasBench_JsonRaw(&detail,storage.status==ATLAS_OK?" ASTAB.CFG saved and readback verified; cycle SW2 OFF then ON":" stabilization save failed; PWM stopped; inspect SD before retrying");
         if (storage.filesystem_result == 8U)
             AtlasBench_JsonRaw(
                 &detail,
@@ -1195,7 +1269,11 @@ static void bench_results(void)
     if (AtlasIo_Receive(&io) && pending == BENCH_PENDING_GPIO && io.ticket == pending_ticket)
     {
         reply = (BenchReply){.id = pending_id, .epoch = pending_epoch, .status = io.status};
-        if (io.type == ATLAS_IO_BENCH_SERVO_ENABLE || io.type == ATLAS_IO_BENCH_SERVO_SET)
+        if(io.type==ATLAS_IO_BENCH_SERVO_SWEEP)
+            bench_text(reply.detail,sizeof(reply.detail),io.status==ATLAS_OK?
+                "one full-range cycle started on Atlas; returns to zero; unchanged 3 s idle cutoff; SW2 ON stops test":
+                "sweep rejected; need SW2 OFF, full travel enabled, fresh session and no running sweep");
+        else if (io.type == ATLAS_IO_BENCH_SERVO_ENABLE || io.type == ATLAS_IO_BENCH_SERVO_SET)
             bench_text(reply.detail, sizeof(reply.detail), io.status == ATLAS_OK ?
                        "servo position applied directly; 3 s idle / 30 s session limit" :
                        "servo request rejected; inspect supply, session, limits and stop reason");
@@ -1243,7 +1321,7 @@ static void bench_console_task(void *argument)
         if (online != connected || usb.session != session)
         {
             ++link_epoch;
-            AtlasIo_BenchServoStop();
+            AtlasIo_BenchUsbLost();
             connected = online;
             session = usb.session;
             last_id = 0U;

@@ -1,5 +1,7 @@
 # Systems and readiness
 
+ServoBench **1.3.0** adds an autonomous [Stabilization tab](STABILIZATION.md): four radial servos, SD-saved settings and physical SW2 control. The single-channel USB/time limits below describe manual Servo workbench operation; stabilization has separate sensor, power and switch limits. See the [three-pass review](STABILIZATION_REVIEW.md).
+
 ## Read this first
 
 The code now contains integration paths for every named onboard subsystem and the expansion buses. **That is software implementation, not proof that every physical system is online.** Host tests cannot establish board wiring, real-time margins, module firmware compatibility, RF connectivity or safe energetic operation.
@@ -13,7 +15,7 @@ The 1.2.2 diagnostic release retains the ADC correction, startup audio, revised 
 | Build preset | Startup and use |
 |---|---|
 | **Bringup / BringupRelease** | Isolated diagnostic RTOS application; USB JSON dashboard, explicit staged probes and SD tests. Failed GNSS alone permits deliberate manual recovery; other probes remain once per boot. RGB, PWM and pyro are inhibited. No control hook; missing modules are reported without the normal required-sensor reset loop |
-| **ServoBench** | Same diagnostic framework plus explicitly enabled, one-channel manual KST PWM with voltage/USB/fault/time limits. Pyro/RGB and flight hook remain inhibited. Follow the [servo procedure](SERVO_BENCH.md); physical movement is pending supply correction |
+| **ServoBench** | Diagnostic framework plus one-channel manual KST PWM with voltage/USB/fault/time limits, or four explicitly configured, SW2-gated [stabilization channels](STABILIZATION.md) that run without USB. Pyro/RGB and flight hook remain inhibited. Follow the [servo procedure](SERVO_BENCH.md) and recorded physical-test limitations. |
 | Debug / Release | Normal application framework below: eager device probes, required-sensor supervision, optional services, qualified output APIs and algorithm hook |
 
 Use **[startup](startup.md)** for the new PCB. It centralizes power/BOOT/reset/USB DFU, fixtures, dashboard and expected evidence. Diagnostic software coverage includes sensors, GNSS/PPS, BLE, SD/RTC, voltage/input monitoring, buzzer, bounded logic GPIO and optional radio/expansion tests. RGB outputs are deliberately unavailable because of the confirmed Q6-Q8 PCB defect. Power regulation and connector waveforms still need instruments; PWM/pyro need separate inert qualification. The PDF/USB manufacturing-polarity conflict is an as-built inspection gate before USB commissioning.
