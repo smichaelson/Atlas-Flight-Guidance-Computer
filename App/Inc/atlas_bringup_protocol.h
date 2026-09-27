@@ -42,7 +42,8 @@ typedef enum
     ATLAS_BENCH_SERVO_ENABLE, ATLAS_BENCH_SERVO_SET, ATLAS_BENCH_SERVO_STOP,
     ATLAS_BENCH_BIRTHDAY,
     ATLAS_BENCH_STABILIZATION,
-    ATLAS_BENCH_SERVO_SWEEP
+    ATLAS_BENCH_SERVO_SWEEP,
+    ATLAS_BENCH_RADIO_CONNECT, ATLAS_BENCH_RADIO_DISCONNECT, ATLAS_BENCH_TELEMETRY
 } AtlasBenchOperation;
 /** @brief Copied command: nonzero host ID, allowlisted operation, bounded integers. */
 typedef struct

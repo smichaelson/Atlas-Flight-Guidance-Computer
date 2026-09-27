@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+from remote_telemetry import validate_remote
 
 MAX_LINE = 8192
 STALE_SECONDS = 2.5
@@ -84,6 +85,10 @@ def validate(frame: object) -> dict:
                 raise ValueError('Invalid melody metadata')
         if 'birthday_melody' in frame and type(frame['birthday_melody']) is not bool:
             raise ValueError('Invalid birthday melody capability')
+        if 'radio_link' in frame and not _integer(frame['radio_link'], 1, 1):
+            raise ValueError('Unsupported radio link protocol')
+        if 'remote_telemetry' in frame and not _integer(frame['remote_telemetry'],1,1):
+            raise ValueError('Unsupported remote telemetry protocol')
         if 'servo_pwm_max_mv' in frame and (frame['profile'] != 'servo_bench' or
                 not _integer(frame['servo_pwm_max_mv'], 1, 30000)):
             raise ValueError('Invalid servo voltage policy')
@@ -98,6 +103,8 @@ def validate(frame: object) -> dict:
                 frame['stabilization'] is not True or frame.get('stabilization_layout') != 1 or
                 frame.get('stabilization_storage') != 'sd'):
             raise ValueError('Invalid stabilization capability')
+    elif kind == "remote":
+        return validate_remote(frame)
     elif kind == "reply":
         if (not _integer(frame.get("id"), 1) or not _integer(frame.get("status"), 0, 13) or
                 not _integer(frame.get("verified_bytes")) or
@@ -207,6 +214,23 @@ def validate(frame: object) -> dict:
                 raise ValueError(f"Invalid {section}.{key}")
         if type(frame["power"].get("available")) is not bool:
             raise ValueError("Missing analog availability")
+        radio = frame['radio']
+        if any(key in radio for key in ('baud', 'connected', 'test', 'monitoring')):
+            counters = ('baud', 'uart_errors', 'dropped', 'ack_age_ms', 'rtt_ms', 'sent',
+                        'received', 'replies', 'acknowledgements', 'timeouts', 'tx_errors',
+                        'invalid', 'test_sequence', 'test_rtt_ms')
+            if (any(not _integer(radio.get(key)) for key in counters) or
+                    any(not _integer(radio.get(key), 0, 1) for key in ('connected','monitoring','waiting')) or
+                    not _integer(radio.get('test'), 0, 5) or
+                    not _array(radio.get('peer'), 3) or not _array(radio.get('test_peer'), 3)):
+                raise ValueError('Invalid radio link telemetry')
+            if radio['connected'] and (radio['ack_age_ms'] >= 6000 or radio['rtt_ms'] >= 2000 or
+                    not any(radio['peer']) or not radio['acknowledgements'] or radio['command'] or
+                    not frame['attempted'] & 128 or frame['init'][9] != 0):
+                raise ValueError('Radio connection lacks fresh round-trip evidence')
+            if radio['test'] == 2 and (not any(radio['test_peer']) or
+                    not radio['test_sequence'] or radio['test_rtt_ms'] >= 2000):
+                raise ValueError('Radio test lacks acknowledgement evidence')
         if (not _integer(frame['gpio']['switch'], 0, 1) or not _integer(frame['gpio']['inputs'], 0, 127) or
                 ('t' in frame['gpio'] and not _integer(frame['gpio']['t']))):
             raise ValueError("Invalid digital inputs")
@@ -274,6 +298,8 @@ class Decoder:
         self.discard = False
         self.errors = 0
         self.last_error = ""
+        self.remote_errors = 0
+        self.last_remote_error = ""
 
     def feed(self, data: bytes) -> list[dict]:
         """@brief Accept arbitrary fragments. @param data Bytes. @return Valid records."""
@@ -284,15 +310,19 @@ class Decoder:
                     self.errors += 1
                     self.last_error = "Overlong record discarded"
                 elif self.buffer.strip():
+                    decoded=None
                     try:
-                        frames.append(validate(json.loads(self.buffer.decode("ascii"),
-                                                          object_pairs_hook=_object,
-                                                          parse_constant=_constant)))
+                        decoded=json.loads(self.buffer.decode("ascii"),object_pairs_hook=_object,parse_constant=_constant)
+                        frames.append(validate(decoded))
                     except (ValueError, RecursionError) as exc:
-                        self.errors += 1
-                        # Escape and bound rejected input for the session log;
-                        # never silently skip corruption to enable commands.
-                        self.last_error = f"{exc}; record starts {bytes(self.buffer[:96])!r}"
+                        if isinstance(decoded,dict) and decoded.get('type')=='remote':
+                            # A rejected RF snapshot must not become a local control fault.
+                            self.remote_errors+=1
+                            self.last_remote_error=str(exc)[:192]
+                        else:
+                            self.errors += 1
+                            # Bound rejected local input; local corruption still fences commands.
+                            self.last_error = f"{exc}; record starts {bytes(self.buffer[:96])!r}"
                 self.buffer.clear()
                 self.discard = False
             elif not self.discard:
@@ -310,7 +340,7 @@ def valid_command(verb: str) -> bool:
         return True
     if verb in {"hello", "status", "beep", "march", "birthday", "stop", "uart", "spi", "sd mount", "sd read",
                 "sd test", "sd unmount", "ble profile", "ble data", "ble command", "ble ping",
-                "radio id", "radio ping"}:
+                "radio id", "radio ping", "radio connect", "radio disconnect", "telemetry on", "telemetry off"}:
         return True
     if verb in {f"probe {module}" for module in MODULES}:
         return True
@@ -358,6 +388,8 @@ class Session:
         """@brief Create a new manually opened connection generation."""
         self.hello: dict | None = None
         self.status: dict | None = None
+        self.remote: dict | None = None
+        self.remote_received_at = float('-inf')
         self.received_at = float("-inf")
         self.next_id = 1
         self.pending: Pending | None = None
@@ -366,13 +398,15 @@ class Session:
 
     def accept(self, frame: dict, now: float) -> None:
         """@brief Apply a validated frame. @param now Monotonic laptop seconds."""
-        validate(frame)
+        frame=validate(frame)
         if frame["type"] == "hello":
             if self.hello and (self.hello["uid"] != frame["uid"] or self.hello['profile'] != frame['profile']):
                 self.blocked = "Device identity changed; disconnect and inspect."
             else:
                 self.hello = frame
         elif frame["type"] == "status" and self.hello:
+            if self.hello.get('radio_link') == 1 and 'connected' not in frame['radio']:
+                self.blocked = 'Radio link telemetry missing; reconnect and inspect firmware.'
             if frame['profile'] != self.hello['profile']:
                 self.blocked = 'Telemetry profile changed; disconnect and inspect.'
             if self.status and (frame["usb"]["session"] != self.status["usb"]["session"] or
@@ -382,6 +416,11 @@ class Session:
             self.received_at = now
             if frame["tasks"]["fault"]:
                 self.blocked = "Firmware supervisor fault; capture evidence and power down."
+        elif frame['type']=='remote' and self.hello:
+            if self.hello.get('remote_telemetry')!=1 or frame['gateway']!=self.hello['uid']:
+                raise ValueError('Remote telemetry gateway/capability mismatch')
+            self.remote=frame
+            self.remote_received_at=now
         elif frame["type"] == "reply":
             if self.pending and frame["id"] == self.pending.identifier:
                 self.last_reply = dict(frame, command=self.pending.verb)
@@ -409,6 +448,12 @@ class Session:
             raise ValueError("Command is not in the diagnostic allowlist")
         servo = verb.startswith('servo ')
         stabilization = verb.startswith('stabilize ')
+        telemetry = verb in ('telemetry on','telemetry off')
+        if telemetry and (not self.hello or self.hello.get('remote_telemetry')!=1):
+            raise ValueError('Install firmware 1.5.0 for remote telemetry')
+        radio_test = verb in ('radio connect', 'radio disconnect', 'radio ping') or telemetry
+        if radio_test and (not self.hello or self.hello.get('radio_link') != 1):
+            raise ValueError('Install firmware 1.4.0 on both Atlas boards for acknowledged radio tests')
         if stabilization and (not self.hello or self.hello.get('stabilization') is not True or
                 self.hello.get('profile') != 'servo_bench' or self.hello.get('stabilization_layout') != 1):
             raise ValueError('Install ServoBench 1.3.0 for stabilization')
@@ -432,9 +477,9 @@ class Session:
                 raise ValueError("MCU still has an outstanding operation; wait for it to finish")
         if self.next_id > 0xFFFFFFFF:
             raise ValueError("Command IDs exhausted; reconnect manually")
-        if self.status and self.status['gpio']['pwm'] and verb not in ('hello', 'status') and not verb.startswith(('servo set ', 'servo sweep ')):
+        if self.status and self.status['gpio']['pwm'] and verb not in ('hello', 'status') and not radio_test and not verb.startswith(('servo set ', 'servo sweep ')):
             raise ValueError('Stop the servo before another bench operation')
-        if self.status and self.status.get('stabilization',{}).get('enabled') and not stabilization and verb not in ('hello','status'):
+        if self.status and self.status.get('stabilization',{}).get('enabled') and not stabilization and not radio_test and verb not in ('hello','status'):
             raise ValueError('Disable stabilization before manual tests or maintenance')
         if stabilization:
             s=self.status; st=s.get('stabilization',{})
@@ -562,7 +607,15 @@ def observations(s: dict) -> list[tuple[str, str, str, str]]:
         detail = f"command mode {part['command']}; RX bytes {part['rx']}; last hex {part['last_hex']}"
         if module == "ble":
             detail = f"{part['model']} {part['firmware']}; " + detail
-        rows.append(("BLE" if module == "ble" else "RFD900x (optional)", state, "--", detail + "; verify peer round trip"))
+        elif 'connected' in part:
+            owner_age=age_ms(s['ms'],s['owner_ms'])
+            connected=part['connected'] and owner_age<=500 and part['ack_age_ms']+owner_age<6000
+            if state=='TRANSPORT INITIALIZED':
+                state='CONNECTED' if connected else 'CHECKING' if part['waiting'] else 'NO RECENT ACK'
+            detail += (f"; peer {'-'.join(f'{word:08X}' for word in part['peer'])}; "
+                       f"round trip {part['rtt_ms']} ms; ACK {part['acknowledgements']}/{part['sent']}; "
+                       f"timeouts {part['timeouts']}; last explicit test result {part['test']}")
+        rows.append(("BLE" if module == "ble" else "RFD900x (optional)", state, "--", detail))
     sd = s["sd"]
     state = "NO CARD" if not sd["card"] else "MOUNTED" if sd["mounted"] else "NOT MOUNTED"
     rows.append(("SD card", state, "--", f"last status {sd['status']}, FatFs {sd['fs']}; "

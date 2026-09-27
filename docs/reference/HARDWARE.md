@@ -53,7 +53,7 @@ Addresses below are seven-bit I2C addresses; the HAL adapter applies the require
 | MS5611 U14 | I2C1 `0x77` | PROM/CRC, compensated D2/D1 conversion |
 | NEO-M9N U23 | USART1 MCU TX PB14 / RX PB15; PPS PA15 TIM2 CH1 | 38400 8N1 host; stale-RX preflight before `MON-VER`; intended RAM-only 10 Hz NAV-PVT; external antenna J27; reset not MCU-routed |
 | NINA-B112 U21 | USART6 MCU TX PG14 / RX PG9, RTS PG8 / CTS PG15 | 115200 8N1 RTS/CTS; reset PD4, SWITCH1 PG5, SWITCH2 PG4, module DSR driven PG6, DTR observed PE1 |
-| RFD900x J9 | USART3 MCU TX PD8 / RX PB11; 5 V and ground | 115200 8N1 host; no routed radio hardware flow control |
+| RFD900x J9 | USART3 MCU TX PD8 / RX PB11; 5 V and ground | 57600 8N1 host; no routed radio hardware flow control |
 | microSD | SDMMC1 D0–D3 PC8–PC11, CK PC12, CMD PD2; detect PD3 | One-bit initialization then four-bit / 25 MHz polling; PD3 active-low mechanical J3 detect |
 | USB full-speed device | PA11 D−, PA12 D+; divider-sensed VBUS PA9 | VBUS-gated CDC owner; PIO, no USB DMA |
 | External UART | UART4 MCU RX PD0 / TX PD1 | 115200 8N1 initially; explicit raw expansion service |

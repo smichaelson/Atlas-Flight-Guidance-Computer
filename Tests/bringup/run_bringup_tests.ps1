@@ -20,6 +20,29 @@ if ($LASTEXITCODE -ne 0) { throw 'Run Start Atlas Dashboard.cmd --check to prepa
 $bringupOutput = Join-Path ([IO.Path]::GetTempPath()) ('atlas-bringup-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $bringupOutput | Out-Null
 Write-Host "Inert bring-up tests: $bringupOutput"
+& gcc -std=c11 -O2 -Wall -Wextra -Werror -I (Join-Path $bringupRoot 'App/Inc') `
+    (Join-Path $bringupRoot 'Tests/bringup/test_telemetry.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_telemetry.c') -o (Join-Path $bringupOutput 'telemetry.exe')
+if ($LASTEXITCODE -ne 0) { exit 2 }
+& (Join-Path $bringupOutput 'telemetry.exe')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& gcc -std=c11 -Wall -Wextra -Werror -I (Join-Path $bringupRoot 'App/Inc') `
+    (Join-Path $bringupRoot 'Tests/bringup/test_radio_link.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_radio_link.c') -o (Join-Path $bringupOutput 'radio-link.exe')
+if ($LASTEXITCODE -ne 0) { exit 2 }
+& (Join-Path $bringupOutput 'radio-link.exe')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $Python (Join-Path $bringupRoot 'Tests/bringup/test_radio_station.py')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $Python (Join-Path $bringupRoot 'Tests/bringup/test_remote_station.py')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $Python (Join-Path $bringupRoot 'Tests/bringup/test_remote_station.py') --fixture |
+    Set-Content -Encoding ascii -LiteralPath (Join-Path $bringupOutput 'remote-fixture.json')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& node (Join-Path $bringupRoot 'Tests/bringup/test_remote_ui.js') (Join-Path $bringupOutput 'remote-fixture.json')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& node (Join-Path $bringupRoot 'Tests/bringup/test_radio_ui.js')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & gcc -std=c11 -Wall -Wextra -Werror -I (Join-Path $bringupRoot 'App/Inc') `
     (Join-Path $bringupRoot 'Tests/bringup/test_protocol.c') `
     (Join-Path $bringupRoot 'App/Src/atlas_bringup_protocol.c') -lm -o (Join-Path $bringupOutput 'protocol.exe')
@@ -50,6 +73,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     (Join-Path $bringupRoot 'Tests/bringup/test_console.c') `
     (Join-Path $bringupRoot 'Tests/services/service_model.c') `
     (Join-Path $bringupRoot 'App/Src/atlas_bringup_protocol.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_radio_link.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_telemetry.c') `
     (Join-Path $bringupRoot 'App/Src/atlas_status.c') -lm -o (Join-Path $bringupOutput 'console.exe')
 if ($LASTEXITCODE -ne 0) { exit 2 }
 $env:ATLAS_BRINGUP_TEST_DIR = $bringupOutput
@@ -81,6 +106,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     (Join-Path $bringupRoot 'Tests/bringup/test_console.c') `
     (Join-Path $bringupRoot 'Tests/services/service_model.c') `
     (Join-Path $bringupRoot 'App/Src/atlas_bringup_protocol.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_radio_link.c') `
+    (Join-Path $bringupRoot 'App/Src/atlas_telemetry.c') `
     (Join-Path $bringupRoot 'App/Src/atlas_status.c') -lm -o (Join-Path $bringupOutput 'servo-console.exe')
 if ($LASTEXITCODE -ne 0) { exit 2 }
 $env:ATLAS_CONSOLE_TEST_EXE = Join-Path $bringupOutput 'servo-console.exe'

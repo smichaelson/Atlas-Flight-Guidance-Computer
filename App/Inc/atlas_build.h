@@ -23,5 +23,5 @@
 #else
 #define ATLAS_BENCH_PROFILE "bringup"
 #endif
-#define ATLAS_BRINGUP_VERSION "1.3.4"
+#define ATLAS_BRINGUP_VERSION "1.5.0"
 #endif

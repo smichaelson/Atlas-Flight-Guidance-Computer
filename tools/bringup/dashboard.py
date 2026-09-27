@@ -35,7 +35,7 @@ class Dashboard:
         self.confirmed = tk.BooleanVar(value=False)
         self.port = tk.StringVar()
         self.banner = tk.StringVar(value="DISCONNECTED — measurements unknown")
-        self.footer = tk.StringVar(value="Local only. No automatic tests, file writes or radio transmissions.")
+        self.footer = tk.StringVar(value="Local dashboard. Firmware 1.5 broadcasts sensor telemetry automatically; use the browser's Remote Atlas tab to view it.")
         self.identity = tk.StringVar(value="Awaiting bring-up firmware handshake")
         self.root.title("Atlas | PCB bring-up" + (" | SIMULATED" if demo else ""))
         self.root.geometry("1160x820")
@@ -136,8 +136,8 @@ class Dashboard:
         ttk.Entry(row, textvariable=self.address, width=5).pack(side="left")
         ttk.Entry(row, textvariable=self.register, width=5).pack(side="left", padx=5)
         ttk.Button(row, text="Read one byte", command=self.i2c).pack(side="left")
-        self._buttons(parent, 9, "Later · RFD900x", [("Transport init", "probe radio"), ("Read identity", "radio id"),
-                      ("Transmit fixed text", "radio ping")])
+        self._buttons(parent, 9, "Later · RFD900x", [("Connect / monitor", "radio connect"), ("Test round trip", "radio ping"),
+                      ("Stop monitoring", "radio disconnect"), ("Read identity", "radio id")])
         ttk.Label(parent, text="One operation at a time. No automatic retry; GNSS alone permits a deliberate manual retry after a reported failure. See startup.md for evidence and recovery.\n"
                   "RGB outputs are firmware-inhibited. SD refuses overwrite/format. There is deliberately no PWM/pyro enable or fire control.",
                   wraplength=1000).grid(row=10, column=0, columnspan=2, sticky="w", pady=16)

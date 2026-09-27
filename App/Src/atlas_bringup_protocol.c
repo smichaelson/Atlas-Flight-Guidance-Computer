@@ -107,6 +107,12 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
         else return false;
         *command=parsed; return true;
     }
+    if(strcmp(token[1],"telemetry")==0)
+    {
+        if(count!=3U || (strcmp(token[2],"on")!=0 && strcmp(token[2],"off")!=0))return false;
+        parsed.operation=ATLAS_BENCH_TELEMETRY;parsed.argument[0]=strcmp(token[2],"on")==0?1U:0U;
+        *command=parsed;return true;
+    }
     if (strcmp(token[1], "servo") == 0)
     {
         if (count == 3U && strcmp(token[2], "stop") == 0)
@@ -168,7 +174,9 @@ bool AtlasBench_Parse(const char *line, AtlasBenchCommand *command)
             {"sd", "test", ATLAS_BENCH_SD_TEST},         {"sd", "unmount", ATLAS_BENCH_SD_UNMOUNT},
             {"ble", "profile", ATLAS_BENCH_BLE_PROFILE}, {"ble", "data", ATLAS_BENCH_BLE_DATA},
             {"ble", "command", ATLAS_BENCH_BLE_COMMAND}, {"ble", "ping", ATLAS_BENCH_BLE_PING},
-            {"radio", "id", ATLAS_BENCH_RADIO_ID},       {"radio", "ping", ATLAS_BENCH_RADIO_PING}};
+            {"radio", "id", ATLAS_BENCH_RADIO_ID},       {"radio", "ping", ATLAS_BENCH_RADIO_PING},
+            {"radio", "connect", ATLAS_BENCH_RADIO_CONNECT},
+            {"radio", "disconnect", ATLAS_BENCH_RADIO_DISCONNECT}};
         for (size_t i = 0U; i < sizeof(pairs) / sizeof(pairs[0]); ++i)
             if (strcmp(token[1], pairs[i].verb) == 0 && strcmp(token[2], pairs[i].word) == 0)
             {

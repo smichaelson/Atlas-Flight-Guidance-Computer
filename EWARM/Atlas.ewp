@@ -1122,6 +1122,9 @@
         <file><name>$PROJ_DIR$/../App/Src/atlas_expansion.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_pyro_policy.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_rfd900x.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_radio_link.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_telemetry.c</name></file>
+        <file><name>$PROJ_DIR$/../App/Src/atlas_telemetry_boot.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_rtos.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_rtos_policy.c</name></file>
         <file><name>$PROJ_DIR$/../App/Src/atlas_spi_device.c</name></file>

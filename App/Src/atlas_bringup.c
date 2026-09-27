@@ -7,13 +7,15 @@
  * - bench_console_task(): frames allowlisted USB requests and publishes JSON lines.
  * - bench_watchdog_task(): supervises task progress, not expected component absence.
  * - bench_status(): serializes real measurements, ages, counters and explicit inhibits.
- * Ordinary Bringup performs no automatic probes or actuation. ServoBench probes
- * the IMU at boot for its explicitly saved, SW2-gated stabilization mode.
- * Settings writes require a deliberate request; no automatic RF transmission occurs.
+ * Both bench profiles sample onboard sensors and send read-only radio snapshots at boot.
+ * ServoBench retains saved, SW2-gated stabilization. Settings writes and explicit radio
+ * round-trip tests require a deliberate request. RF input cannot command outputs.
  */
 #include "atlas_bringup.h"
 #include "atlas_build.h"
 #include "atlas_bringup_protocol.h"
+#include "atlas_radio_link.h"
+#include "atlas_telemetry.h"
 #include "atlas_boot.h"
 #include "atlas_expansion.h"
 #include "atlas_rtos.h"
@@ -24,6 +26,7 @@
 #include "queue.h"
 #include "task.h"
 #include <string.h>
+#include <math.h>
 
 #if ATLAS_BRINGUP
 #define BENCH_STACK_WORDS 2048U
@@ -72,6 +75,9 @@ typedef struct
     char ble_model[ATLAS_BLE_IDENTITY_CAPACITY], ble_firmware[ATLAS_BLE_IDENTITY_CAPACITY];
     char gnss_version[ATLAS_GNSS_VERSION_TEXT_CAPACITY];
     bool ble_command, ble_dtr, radio_command;
+    AtlasRadioLinkSnapshot radio_link;
+    AtlasTelemetrySnapshot remote;
+    uint32_t radio_baud, radio_uart_errors, radio_dropped;
     uint32_t lsm_interrupts;
 } BenchSamples;
 /** @brief Distinct result owners; a disconnected request is drained, never replayed. */
@@ -93,6 +99,12 @@ static StackType_t console_stack[BENCH_STACK_WORDS], owner_stack[BENCH_OWNER_STA
 static StackType_t watchdog_stack[BENCH_WATCH_STACK_WORDS];
 static TaskHandle_t console_handle, owner_handle;
 static BenchSamples working, published, console_sample;
+static AtlasRadioLink radio_link;
+static AtlasTelemetry telemetry;
+static uint32_t telemetry_boot[2];
+static bool radio_tx_used, sensors_started;
+static BenchReply radio_reply;
+static bool radio_reply_pending;
 static AtlasStatus io_start, storage_start, expansion_start;
 static volatile uint32_t console_heartbeat, owner_heartbeat, link_epoch, worker_deadline;
 static volatile uint32_t watchdog_refreshes, watchdog_fault;
@@ -287,6 +299,11 @@ static void bench_publish(void)
     working.ble_command = bench_board->ble.command_mode;
     working.ble_dtr = AtlasBle_IsDtrAsserted(&bench_board->ble);
     working.radio_command = bench_board->radio.command_mode;
+    AtlasRadioLink_Snapshot(&radio_link,HAL_GetTick(),&working.radio_link);
+    working.remote=telemetry.view;
+    working.radio_baud = bench_board->hardware.radio_uart->Init.BaudRate;
+    working.radio_uart_errors = bench_board->radio_transport.health.uart_errors;
+    working.radio_dropped = bench_board->radio_transport.health.dropped_bytes;
     memcpy(working.ble_model, bench_board->ble.model, sizeof(working.ble_model));
     memcpy(working.ble_firmware, bench_board->ble.firmware, sizeof(working.ble_firmware));
     memcpy(working.gnss_version, bench_board->gnss.software_version, sizeof(working.gnss_version));
@@ -379,13 +396,160 @@ static void bench_sample(void)
         working.ble_length = (uint8_t)ble;
         working.ble_received += (uint32_t)ble;
     }
-    const size_t radio = AtlasRfd900x_Read(&bench_board->radio, bytes, sizeof(bytes));
+    /* Drain a bounded larger radio batch without enlarging the legacy preview. */
+    uint8_t radio_bytes[256];
+    const size_t radio = AtlasRfd900x_Read(&bench_board->radio, radio_bytes, sizeof(radio_bytes));
     if (radio != 0U)
     {
-        memcpy(working.radio_rx, bytes, radio);
-        working.radio_length = (uint8_t)radio;
+        const size_t preview=radio<sizeof(working.radio_rx)?radio:sizeof(working.radio_rx);
+        memcpy(working.radio_rx, radio_bytes+radio-preview, preview);
+        working.radio_length = (uint8_t)preview;
         working.radio_received += (uint32_t)radio;
+        AtlasRadioLink_Feed(&radio_link,radio_bytes,radio,HAL_GetTick());
+        AtlasTelemetry_Feed(&telemetry,radio_bytes,radio,HAL_GetTick());
     }
+}
+
+/** @brief A 100-byte telemetry packet takes 17.4 ms at 57600; never waits for a peer.
+ * @param context Unused. @param bytes Frame. @param length Frame size. @return UART result. */
+static AtlasStatus bench_radio_send(void *context, const uint8_t *bytes, size_t length)
+{
+    (void)context;
+    radio_tx_used=true;
+    return AtlasRfd900x_Write(&bench_board->radio,bytes,length,length>44U?25U:20U);
+}
+
+/** @brief Encode a finite scaled measurement, reserving INT32_MIN for unavailable values.
+ * @param value Measurement. @param scale Multiplier. @return Signed bits or invalid sentinel. */
+static uint32_t bench_tm_scaled(float value,uint32_t scale)
+{
+    const double n=round((double)value*scale);
+    return isfinite(n)&&n>INT32_MIN&&n<=INT32_MAX?(uint32_t)(int32_t)n:UINT32_C(0x80000000);
+}
+/** @brief Write a three-component field. @param w Sample words. @param offset Field offset.
+ * @param x X. @param y Y. @param z Z. @param scale Multiplier. */
+static void bench_tm_vector(uint32_t *w,unsigned offset,float x,float y,float z,uint32_t scale)
+{ w[offset]=bench_tm_scaled(x,scale);w[offset+1U]=bench_tm_scaled(y,scale);w[offset+2U]=bench_tm_scaled(z,scale); }
+/** @brief Capture one complete source snapshot; validity/counts and timestamps travel with values. */
+static void bench_telemetry_begin(void)
+{
+    uint32_t w[ATLAS_TM_WORDS]={0};
+    AtlasIoSnapshot io={0};AtlasStorageHealth sd={0};
+    const bool io_ok=io_start==ATLAS_OK&&AtlasIo_GetSnapshot(&io);
+    (void)AtlasStorage_GetHealth(&sd);
+    const BenchSamples *b=&working;const AtlasRtosSnapshot *s=&b->sensors;
+    w[TM_MAGIC]=ATLAS_TM_MAGIC;w[TM_UPTIME]=HAL_GetTick();w[TM_VERSION]=0x010500U;
+    w[TM_PROFILE]=ATLAS_SERVO_BENCH;w[TM_ATTEMPTED]=bench_board->attempted_modules;
+    const AtlasBoardInitReport *r=&bench_board->init;
+    const AtlasStatus init[]={r->adxl375,r->lsm6dsv16b,r->mmc5983ma,r->ms5611,r->bno085,
+        r->bno085_default_reports,r->gnss,r->gnss_ram_configuration,r->ble,r->radio_transport,r->led,r->buzzer};
+    const AtlasStatus statuses[]={s->adxl375_status,s->lsm6dsv16b_status,s->mmc5983ma_status,s->ms5611_status};
+    for(unsigned i=0;i<12U;++i)w[TM_INIT+i]=init[i];
+    for(unsigned i=0;i<4U;++i){w[TM_COUNT+i]=b->count[i];w[TM_ERRORS+i]=b->errors[i];w[TM_SAMPLE_STATUS+i]=statuses[i];w[TM_BNO_COUNT+i]=b->bno_count[i];}
+    w[TM_TIME]=s->adxl375.timestamp_ms;w[TM_TIME+1]=s->lsm6dsv16b.timestamp_ms;
+    w[TM_TIME+2]=s->mmc5983ma.timestamp_ms;w[TM_TIME+3]=s->ms5611.timestamp_ms;
+    bench_tm_vector(w,TM_ADXL,s->adxl375.x_g,s->adxl375.y_g,s->adxl375.z_g,1000U);
+    const AtlasLsm6dsv16bSample *lsm=&s->lsm6dsv16b;
+    bench_tm_vector(w,TM_LSM_ACCEL,lsm->accel_x_g,lsm->accel_y_g,lsm->accel_z_g,1000U);
+    bench_tm_vector(w,TM_LSM_GYRO,lsm->gyro_x_dps,lsm->gyro_y_dps,lsm->gyro_z_dps,1000U);
+    w[TM_LSM_TEMP]=bench_tm_scaled(lsm->temperature_c,100U);
+    bench_tm_vector(w,TM_MMC,s->mmc5983ma.x_gauss,s->mmc5983ma.y_gauss,s->mmc5983ma.z_gauss,100000U);
+    w[TM_BARO_PA]=(uint32_t)s->ms5611.pressure_pa;w[TM_BARO_TEMP]=(uint32_t)s->ms5611.temperature_centi_c;
+    w[TM_BNO_TIME]=s->bno_accelerometer_received_at_ms;w[TM_BNO_TIME+1]=s->bno_gyroscope_received_at_ms;
+    w[TM_BNO_TIME+2]=s->bno_magnetometer_received_at_ms;w[TM_BNO_TIME+3]=s->bno_rotation_vector_received_at_ms;
+    w[TM_BNO_ACCURACY]=s->bno_accelerometer.status|((uint32_t)s->bno_gyroscope.status<<8U)|
+        ((uint32_t)s->bno_magnetometer.status<<16U)|((uint32_t)s->bno_rotation_vector.status<<24U);
+    bench_tm_vector(w,TM_BNO_ACCEL,s->bno_accelerometer.un.accelerometer.x,s->bno_accelerometer.un.accelerometer.y,s->bno_accelerometer.un.accelerometer.z,1000U);
+    bench_tm_vector(w,TM_BNO_GYRO,s->bno_gyroscope.un.gyroscope.x,s->bno_gyroscope.un.gyroscope.y,s->bno_gyroscope.un.gyroscope.z,1000U);
+    bench_tm_vector(w,TM_BNO_MAG,s->bno_magnetometer.un.magneticField.x,s->bno_magnetometer.un.magneticField.y,s->bno_magnetometer.un.magneticField.z,1000U);
+    w[TM_BNO_Q]=bench_tm_scaled(s->bno_rotation_vector.un.rotationVector.real,1000000U);
+    w[TM_BNO_Q+1]=bench_tm_scaled(s->bno_rotation_vector.un.rotationVector.i,1000000U);
+    w[TM_BNO_Q+2]=bench_tm_scaled(s->bno_rotation_vector.un.rotationVector.j,1000000U);
+    w[TM_BNO_Q+3]=bench_tm_scaled(s->bno_rotation_vector.un.rotationVector.k,1000000U);
+    const AtlasGnssNavPvt *g=&s->gnss_nav_pvt;
+    w[TM_GNSS_TIME]=g->received_at_ms;w[TM_GNSS_COUNT]=bench_board->gnss.health.nav_pvt_frames;
+    w[TM_GNSS_FIX]=g->fix_type|((uint32_t)g->flags<<8U)|((uint32_t)g->satellites_used<<16U);
+    w[TM_LAT]=(uint32_t)g->latitude_1e7_deg;w[TM_LON]=(uint32_t)g->longitude_1e7_deg;w[TM_ALT]=(uint32_t)g->height_msl_mm;
+    w[TM_HACC]=g->horizontal_accuracy_mm;w[TM_TOW]=g->time_of_week_ms;
+    w[TM_PPS_COUNT]=s->gnss_pps.pulse_count;w[TM_PPS_US]=s->gnss_pps.period_us;
+    w[TM_GNSS_CRC]=bench_board->gnss.health.checksum_errors;
+    w[TM_ADC_TIME]=io.analog.sampled_at_ms;w[TM_ADC_COUNT]=io.analog.sequence;
+    w[TM_ADC_STATUS]=(uint32_t)io.status|(io_ok?256U:0U);w[TM_ADC_VALID]=io.analog.valid_mask;
+    w[TM_VDDA]=io.analog.vdda_mv;w[TM_DIE_TEMP]=(uint32_t)(int32_t)io.analog.die_temperature_c;
+    for(unsigned i=0;i<ATLAS_ANALOG_CHANNELS;++i)w[TM_MV+i]=io.analog.millivolts[i];
+    for(unsigned i=0;i<5U;++i)w[TM_RAW+i]=io.analog.raw[2U*i]|((uint32_t)io.analog.raw[2U*i+1U]<<16U);
+    w[TM_ADC_ERRORS]=io.adc_errors;w[TM_RESET]=io.reset_flags;w[TM_POWER_EVENTS]=io.power_events;w[TM_FAULT]=watchdog_fault;
+    w[TM_GPIO]=io.gpio_inputs|((uint32_t)io.gpio_commanded_high<<8U)|((uint32_t)io.external_switch<<16U)|
+        ((uint32_t)io.pwm_enabled_mask<<17U)|((uint32_t)io.pyro.software_armed<<25U);
+    const AtlasStabilizationSnapshot *st=&io.stabilization;
+    w[TM_STABILIZATION]=(uint32_t)st->enabled|((uint32_t)st->active<<1U)|((uint32_t)st->calibrated<<2U)|
+        ((uint32_t)st->saved<<3U)|((uint32_t)st->reverse_mask<<8U)|((uint32_t)st->state<<16U)|((uint32_t)st->reason<<24U);
+    bench_tm_vector(w,TM_UP,st->up[0],st->up[1],st->up[2],1000U);
+    for(unsigned i=0;i<4U;++i)w[TM_PWM+i]=io.commanded_pwm_us[2U*i]|((uint32_t)io.commanded_pwm_us[2U*i+1U]<<16U);
+    w[TM_SD]=(uint32_t)sd.card_detected|((uint32_t)sd.mounted<<1U)|((uint32_t)sd.last_status<<8U);
+    w[TM_SD_ERRORS]=sd.errors;w[TM_SERVICE]=s->board_service_status;
+    w[TM_BNO_IO]=bench_board->bno085.health.io_errors;w[TM_BNO_PROTOCOL]=bench_board->bno085.health.protocol_errors;
+    w[TM_GNSS_UART]=bench_board->gnss_transport.health.uart_errors;w[TM_GNSS_DROPPED]=bench_board->gnss_transport.health.dropped_bytes;
+    w[TM_TX_PACKETS]=telemetry.view.stats.tx_packets;w[TM_STARTUP]=sensors_started?1U:0U;
+    (void)AtlasTelemetry_Begin(&telemetry,w,HAL_GetTick());
+}
+
+/** @brief Probe onboard sensing once before publishing any stabilization IMU samples.
+ * Each operation retains its existing bound; outputs remain governed by the IO owner. */
+static void bench_sensor_startup(void)
+{
+    const AtlasBoardModule modules[]={ATLAS_BOARD_ADXL,ATLAS_BOARD_MMC,ATLAS_BOARD_BARO,
+        ATLAS_BOARD_BNO,ATLAS_BOARD_GNSS,ATLAS_BOARD_LSM};
+    for(unsigned i=0;i<sizeof(modules)/sizeof(modules[0]);++i){
+        taskENTER_CRITICAL();worker_deadline=HAL_GetTick()+BENCH_OPERATION_MS;worker_busy=true;taskEXIT_CRITICAL();
+        (void)AtlasBoard_ProbeModule(bench_board,modules[i]);
+        taskENTER_CRITICAL();
+        if((uint32_t)(HAL_GetTick()-worker_deadline)<UINT32_C(0x80000000))watchdog_fault=6U;
+        ++owner_heartbeat;worker_busy=false;taskEXIT_CRITICAL();
+        bench_publish();
+        if(watchdog_fault)break;
+    }
+    sensors_started=watchdog_fault==0U;
+}
+
+/** @brief Only bounded diagnostic radio operations may coexist with stabilization.
+ * @param operation Requested operation. @return True for non-actuating link operations. */
+static bool bench_radio_operation(AtlasBenchOperation operation)
+{
+    return operation==ATLAS_BENCH_RADIO_PING || operation==ATLAS_BENCH_RADIO_CONNECT ||
+           operation==ATLAS_BENCH_RADIO_DISCONNECT || operation==ATLAS_BENCH_TELEMETRY;
+}
+
+/** @brief Finish an asynchronous USB test only after the matching RF ACK or a deadline. */
+static void bench_radio_complete(void)
+{
+    if (!radio_reply_pending || radio_link.state.test==ATLAS_RADIO_TEST_WAITING ||
+        uxQueueSpacesAvailable(result_queue)==0U) return;
+    if (radio_link.state.test==ATLAS_RADIO_TEST_ACK) {
+        radio_reply.status=ATLAS_OK;
+        AtlasBenchJson detail;
+        AtlasBench_JsonInit(&detail,radio_reply.detail,sizeof(radio_reply.detail));
+        AtlasBench_JsonRaw(&detail,"Peer acknowledged test ");
+        AtlasBench_JsonU32(&detail,radio_link.state.test_sequence);
+        AtlasBench_JsonRaw(&detail,"; peer UID ");
+        for (unsigned i=0U;i<3U;++i) {
+            if(i) AtlasBench_JsonRaw(&detail,"-");
+            AtlasBench_JsonU32(&detail,radio_link.state.test_peer[i]);
+        }
+        AtlasBench_JsonRaw(&detail,"; round trip ");
+        AtlasBench_JsonU32(&detail,radio_link.state.test_rtt_ms);
+        AtlasBench_JsonRaw(&detail," ms");
+    } else {
+        radio_reply.status=radio_link.state.test==ATLAS_RADIO_TEST_TIMEOUT?
+                           ATLAS_ERROR_TIMEOUT:ATLAS_ERROR_IO;
+        bench_text(radio_reply.detail,sizeof(radio_reply.detail),
+                   radio_link.state.test==ATLAS_RADIO_TEST_TIMEOUT?
+                   "No peer acknowledgement within 2000 ms; check peer firmware, power and radio link":
+                   "Radio test stopped before a peer acknowledgement");
+    }
+    bench_publish();
+    configASSERT(xQueueSend(result_queue,&radio_reply,0U)==pdTRUE);
+    radio_reply_pending=false;
 }
 
 /** @brief Exercise only an explicitly requested, externally wired expansion fixture.
@@ -462,6 +626,7 @@ static AtlasStatus bench_execute(const AtlasBenchCommand *command, BenchReply *r
     switch (command->operation)
     {
     case ATLAS_BENCH_PROBE:
+        if (command->argument[0]==ATLAS_BOARD_RADIO) AtlasRadioLink_Stop(&radio_link);
         return AtlasBoard_ProbeModule(bench_board, (AtlasBoardModule)command->argument[0]);
     case ATLAS_BENCH_LED:
         return AtlasLed_SetColor(&bench_board->led, (AtlasLedColor)command->argument[0]);
@@ -491,6 +656,11 @@ static AtlasStatus bench_execute(const AtlasBenchCommand *command, BenchReply *r
                                   sizeof(BENCH_TEST_TEXT) - 1U, 10U);
     case ATLAS_BENCH_RADIO_ID:
     {
+        if (radio_link.state.monitoring || radio_link.state.waiting || telemetry.view.streaming) {
+            bench_text(reply->detail,sizeof(reply->detail),"Pause telemetry and stop radio monitoring on both boards before local AT diagnostics");
+            return ATLAS_ERROR_BUSY;
+        }
+        AtlasRadioLink_Stop(&radio_link);
         AtlasStatus status = AtlasRfd900x_EnterCommandMode(&bench_board->radio);
         if (status == ATLAS_OK)
             status = AtlasRfd900x_ReadIdentity(&bench_board->radio, reply->detail,
@@ -504,8 +674,19 @@ static AtlasStatus bench_execute(const AtlasBenchCommand *command, BenchReply *r
         return status;
     }
     case ATLAS_BENCH_RADIO_PING:
-        return AtlasRfd900x_Write(&bench_board->radio, (const uint8_t *)BENCH_TEST_TEXT,
-                                  sizeof(BENCH_TEST_TEXT) - 1U, 10U);
+    case ATLAS_BENCH_RADIO_CONNECT:
+        return AtlasRadioLink_Test(&radio_link,HAL_GetTick(),
+            command->operation==ATLAS_BENCH_RADIO_CONNECT,bench_radio_send,NULL);
+    case ATLAS_BENCH_RADIO_DISCONNECT:
+        AtlasRadioLink_Stop(&radio_link);
+        bench_text(reply->detail,sizeof(reply->detail),"Monitoring stopped; passive peer replies remain available");
+        return ATLAS_OK;
+    case ATLAS_BENCH_TELEMETRY:
+        AtlasTelemetry_SetStreaming(&telemetry,command->argument[0]!=0U);
+        bench_text(reply->detail,sizeof(reply->detail),telemetry.view.streaming?
+            "Local telemetry broadcasting; remote reception remains active":
+            "Local telemetry paused; remote reception remains active");
+        return command->argument[0]&&!telemetry.view.tx_ready?ATLAS_ERROR_NOT_READY:ATLAS_OK;
     case ATLAS_BENCH_UART_TEST:
     case ATLAS_BENCH_SPI_TEST:
     case ATLAS_BENCH_I2C_READ:
@@ -520,18 +701,30 @@ static AtlasStatus bench_execute(const AtlasBenchCommand *command, BenchReply *r
 static void bench_owner_task(void *argument)
 {
     (void)argument;
+    const uint32_t uid[3]={HAL_GetUIDw0(),HAL_GetUIDw1(),HAL_GetUIDw2()};
+    AtlasRadioLink_Init(&radio_link,uid);
+    AtlasTelemetry_Init(&telemetry,uid,telemetry_boot,HAL_GetTick());
+    /* Start receive-only transport even on a battery-only peer. Never change modem settings. */
+    (void)AtlasBoard_ProbeModule(bench_board,ATLAS_BOARD_RADIO);
+    bench_sensor_startup();
     bench_startup_start();
-#if ATLAS_SERVO_BENCH
-    /* Required for saved autonomous bench mode, including battery-only startup. */
-    (void)AtlasBoard_ProbeModule(bench_board,ATLAS_BOARD_LSM);
-#endif
     for (;;)
     {
         bench_melody_service();
         bench_sample();
+        radio_tx_used=false;
+        if (watchdog_fault || !bench_board->radio.initialized || bench_board->radio.command_mode)
+            AtlasRadioLink_Stop(&radio_link);
+        else {
+            AtlasRadioLink_Service(&radio_link,HAL_GetTick(),bench_radio_send,NULL);
+            if(AtlasTelemetry_Due(&telemetry,HAL_GetTick()))bench_telemetry_begin();
+        }
+        AtlasTelemetry_Service(&telemetry,HAL_GetTick(),
+            !radio_tx_used&&!watchdog_fault&&bench_board->radio.initialized&&!bench_board->radio.command_mode?bench_radio_send:NULL,NULL);
+        bench_radio_complete();
         (void)AtlasExpansion_Service(false);
         BenchWork work;
-        if (uxQueueSpacesAvailable(result_queue) != 0U &&
+        if (!radio_reply_pending && uxQueueSpacesAvailable(result_queue) != 0U &&
             xQueueReceive(work_queue, &work, 0U) == pdTRUE)
         {
             BenchReply reply = {.id = work.command.id, .epoch = work.epoch};
@@ -545,7 +738,7 @@ static void bench_owner_task(void *argument)
             else
             {
                 /* Stop tones/melodies before another operation can delay service. */
-                bench_melody_stop();
+                if (!bench_radio_operation(work.command.operation)) bench_melody_stop();
                 taskENTER_CRITICAL();
                 worker_deadline = HAL_GetTick() + BENCH_OPERATION_MS;
                 worker_busy = true;
@@ -565,7 +758,15 @@ static void bench_owner_task(void *argument)
                 taskEXIT_CRITICAL();
             }
             bench_publish();
-            configASSERT(xQueueSend(result_queue, &reply, 0U) == pdTRUE);
+            if (reply.status==ATLAS_OK &&
+                (work.command.operation==ATLAS_BENCH_RADIO_PING || work.command.operation==ATLAS_BENCH_RADIO_CONNECT)) {
+                radio_reply=reply; radio_reply_pending=true;
+            } else {
+                if (bench_radio_operation(work.command.operation) &&
+                    work.command.operation!=ATLAS_BENCH_TELEMETRY && reply.status!=ATLAS_OK)
+                    bench_text(reply.detail,sizeof(reply.detail),"Radio UART test could not start; no RF acknowledgement received");
+                configASSERT(xQueueSend(result_queue, &reply, 0U) == pdTRUE);
+            }
         }
         bench_publish();
         ++owner_heartbeat;
@@ -642,6 +843,8 @@ static void bench_hello(void)
     AtlasBench_JsonRaw(&json, ",\"pwm_pyro_inhibited\":true,\"servo_test\":false");
 #endif
     bench_field(&json, "schema", ATLAS_BENCH_SCHEMA);
+    bench_field(&json, "radio_link", 1U);
+    bench_field(&json, "remote_telemetry", 1U);
     bench_field(&json, "march_notes", (uint32_t)BENCH_MARCH_NOTES);
     uint32_t duration_ms = 0U;
     for (unsigned i = 0U; i < BENCH_MARCH_NOTES; ++i)
@@ -964,6 +1167,30 @@ static void bench_status(void)
     AtlasBench_JsonRaw(&j, "},\"radio\":{\"rx\":");
     AtlasBench_JsonU32(&j, b->radio_received);
     bench_field(&j, "command", b->radio_command ? 1U : 0U);
+    bench_field(&j, "baud", b->radio_baud);
+    bench_field(&j, "uart_errors", b->radio_uart_errors);
+    bench_field(&j, "dropped", b->radio_dropped);
+    const AtlasRadioLinkSnapshot *rl=&b->radio_link;
+    bench_field(&j, "monitoring", rl->monitoring);
+    bench_field(&j, "connected", rl->connected);
+    bench_field(&j, "waiting", rl->waiting);
+    bench_field(&j, "ack_age_ms", rl->ack_age_ms);
+    bench_field(&j, "rtt_ms", rl->rtt_ms);
+    bench_field(&j, "sent", rl->sent);
+    bench_field(&j, "received", rl->received);
+    bench_field(&j, "replies", rl->replies);
+    bench_field(&j, "acknowledgements", rl->acknowledgements);
+    bench_field(&j, "timeouts", rl->timeouts);
+    bench_field(&j, "tx_errors", rl->tx_errors);
+    bench_field(&j, "invalid", rl->invalid);
+    bench_field(&j, "test", rl->test);
+    bench_field(&j, "test_sequence", rl->test_sequence);
+    bench_field(&j, "test_rtt_ms", rl->test_rtt_ms);
+    AtlasBench_JsonRaw(&j, ",\"peer\":[");
+    for(unsigned i=0U;i<3U;++i) { if(i) AtlasBench_JsonRaw(&j,","); AtlasBench_JsonU32(&j,rl->peer[i]); }
+    AtlasBench_JsonRaw(&j, "],\"test_peer\":[");
+    for(unsigned i=0U;i<3U;++i) { if(i) AtlasBench_JsonRaw(&j,","); AtlasBench_JsonU32(&j,rl->test_peer[i]); }
+    AtlasBench_JsonRaw(&j, "]");
     AtlasBench_JsonRaw(&j, ",\"last_hex\":");
     bench_hex(&j, b->radio_rx, b->radio_length);
     AtlasBench_JsonRaw(&j, "},\"usb\":{\"session\":");
@@ -1008,6 +1235,37 @@ static void bench_reply(const BenchReply *reply)
     }
     reply_ring[(reply_head + reply_count) % BENCH_REPLY_COUNT] = *reply;
     ++reply_count;
+}
+/** @brief Serialize remote telemetry separately so it cannot masquerade as local status. */
+static void bench_remote_status(void)
+{
+    taskENTER_CRITICAL();console_sample=published;taskEXIT_CRITICAL();
+    const AtlasTelemetrySnapshot *r=&console_sample.remote;
+    const AtlasTelemetryStats *s=&r->stats;
+    AtlasBenchJson j;AtlasBench_JsonInit(&j,tx,sizeof(tx));
+    AtlasBench_JsonRaw(&j,"{\"type\":\"remote\",\"schema\":1");
+    bench_field(&j,"ms",HAL_GetTick());bench_field(&j,"owner_ms",console_sample.published_ms);
+    const uint32_t uid[3]={HAL_GetUIDw0(),HAL_GetUIDw1(),HAL_GetUIDw2()};
+    const uint32_t *arrays[]={uid,r->peer,r->boot};const unsigned sizes[]={3U,3U,2U};
+    const char *names[]={"gateway","peer","boot"};
+    for(unsigned k=0;k<3U;++k){
+        AtlasBench_JsonRaw(&j,",\"");AtlasBench_JsonRaw(&j,names[k]);AtlasBench_JsonRaw(&j,"\":[");
+        for(unsigned i=0;i<sizes[k];++i){if(i)AtlasBench_JsonRaw(&j,",");AtlasBench_JsonU32(&j,arrays[k][i]);}
+        AtlasBench_JsonRaw(&j,"]");
+    }
+    bench_field(&j,"sequence",r->sequence);bench_field(&j,"received_ms",r->received_ms);
+    bench_field(&j,"assembly_ms",r->assembly_ms);bench_field(&j,"available",r->available);
+    bench_field(&j,"tx_ready",r->tx_ready);bench_field(&j,"streaming",r->streaming);
+    bench_field(&j,"uart_errors",console_sample.radio_uart_errors);bench_field(&j,"uart_dropped",console_sample.radio_dropped);
+    AtlasBench_JsonRaw(&j,",\"stats\":{\"rx_packets\":");AtlasBench_JsonU32(&j,s->rx_packets);
+#define TM_STAT(name) bench_field(&j,#name,s->name)
+    TM_STAT(rx_bytes);TM_STAT(crc_errors);TM_STAT(header_errors);TM_STAT(duplicates);TM_STAT(old_packets);
+    TM_STAT(foreign_packets);TM_STAT(sessions);TM_STAT(expected_packets);TM_STAT(missing_packets);
+    TM_STAT(good_batches);TM_STAT(lost_batches);TM_STAT(recovered_batches);TM_STAT(recovered_packets);TM_STAT(batch_crc_errors);
+    TM_STAT(tx_packets);TM_STAT(tx_bytes);TM_STAT(tx_errors);TM_STAT(tx_batches);TM_STAT(tx_aborted);
+    TM_STAT(rx_bps);TM_STAT(payload_bps);TM_STAT(rx_pps);
+#undef TM_STAT
+    AtlasBench_JsonRaw(&j,"},\"payload_hex\":");bench_hex(&j,r->data,sizeof(r->data));bench_finish(&j);
 }
 /** @brief Compose the oldest retained command result. */
 static void bench_send_reply(void)
@@ -1113,7 +1371,7 @@ static void bench_dispatch(const AtlasBenchCommand *command)
     pending_epoch = link_epoch;
     AtlasIoSnapshot control_io={0};
     if(AtlasIo_GetSnapshot(&control_io) && control_io.stabilization.enabled &&
-       command->operation!=ATLAS_BENCH_STABILIZATION)
+       command->operation!=ATLAS_BENCH_STABILIZATION && !bench_radio_operation(command->operation))
     {
         reply.status=ATLAS_ERROR_BUSY;
         bench_text(reply.detail,sizeof(reply.detail),"Disable stabilization before manual tests or sensor maintenance");
@@ -1312,7 +1570,8 @@ static void bench_console_task(void *argument)
 {
     (void)argument;
     bool connected = false;
-    uint32_t session = 0U, dropped = 0U, last_status = HAL_GetTick();
+    uint32_t session = 0U, dropped = 0U, last_status = HAL_GetTick(), last_remote=last_status;
+    bool remote_due=false;
     for (;;)
     {
         AtlasUsbHealth usb = {0};
@@ -1329,6 +1588,7 @@ static void bench_console_task(void *argument)
             tx_length = tx_offset = 0U;
             reply_head = reply_count = 0U;
             hello_due = online;
+            remote_due=false;last_remote=HAL_GetTick();
             dropped = usb.rx_dropped_bytes;
             dfu_pending = false; /* A disconnected/unobserved request never replays. */
             tx_queued = 0U;
@@ -1368,10 +1628,14 @@ static void bench_console_task(void *argument)
             }
             else if (reply_count != 0U)
                 bench_send_reply();
+            else if(!dfu_pending&&remote_due){
+                bench_remote_status();last_remote=HAL_GetTick();remote_due=false;
+            }
             else if (!dfu_pending && (uint32_t)(HAL_GetTick() - last_status) >= BENCH_PERIOD_MS)
             {
                 last_status = HAL_GetTick();
                 bench_status();
+                remote_due=(uint32_t)(HAL_GetTick()-last_remote)>=500U;
             }
         }
         if (online && tx_offset < tx_length)
@@ -1460,6 +1724,7 @@ AtlasStatus AtlasBringup_Start(AtlasBoard *board, IWDG_HandleTypeDef *watchdog)
         return ATLAS_ERROR_STATE;
     bench_board = board;
     bench_watchdog = watchdog;
+    AtlasTelemetry_NewBoot(telemetry_boot);
     working.sensors.adxl375_status = working.sensors.lsm6dsv16b_status =
         working.sensors.mmc5983ma_status = working.sensors.ms5611_status = ATLAS_ERROR_NOT_READY;
     working.init = board->init;

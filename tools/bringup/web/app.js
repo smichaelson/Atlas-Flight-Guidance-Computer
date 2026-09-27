@@ -13,6 +13,7 @@ const views = {
   sensors:['INSTRUMENTS / 02','Sensor observatory','Measurements, timestamps and diagnostics, side by side.','Sensors'],
   gnss:['NAVIGATION / 03','Position & timing','GNSS fixes, local ground track and pulse-per-second timing.','Navigation'],
   links:['COMMUNICATIONS / 04','Across the link','Observe USB, BLE and the RFD900x serial modem.','Communications'],
+  remote:['TELEMETRY / 05','The other Atlas','Sensor readings and board condition, received over the radio link.','Remote Atlas'],
   tests:['BENCH / 05','Test with intention','Run one explicit operation and inspect its result.','Test controls'],
   servos:['BENCH / 06','Motion, under control','Choose a precise angle for one KST X10 at a time, across its nominal ±50° travel.','Servo workbench'],
   stabilization:['BENCH / 07','Keep pointing down','Four radial servos follow gravity. Atlas runs the loop, with or without USB.','Stabilization'],
@@ -159,9 +160,10 @@ function render(v){
     groundTrack(s,v.history);const g=good?s.gnss:null,fix=g&&gnssGood(s);
     details('gnss-details',[['Receiver',g?.version||'—'],['Position quality',fix?'3D fix reported':'No valid 3D fix'],['Latitude',fix?number(g.lat_e7/1e7,7)+'°':'—'],['Longitude',fix?number(g.lon_e7/1e7,7)+'°':'—'],['MSL altitude',fix&&finite(g.h_msl_mm)?number(g.h_msl_mm/1000,3)+' m':'—'],['Horizontal accuracy',fix?number(g.hacc_mm/1000,3)+' m':'—'],['Satellites',g?.frames?g.sv:'—'],['NAV frames / CRC errors',g?g.frames+' / '+g.crc_errors:'—'],['PPS count / interval',g?g.pps_count+' / '+g.pps_us+' µs':'—'],['Time of week',g?g.tow_ms+' ms':'—'],['UART RX / TX',g?g.rx_bytes+' / '+g.tx_bytes+' bytes':'—'],['Probe stage / status',g?g.failure_stage+' / '+g.failure_status:'—'],['UART errors / dropped',g?g.uart_errors+' / '+g.dropped:'—']]);
   }
+  if(currentView==='remote')window.AtlasRemote?.render(v,good);
   if(currentView==='links'){
     const r=good?s.radio:null,b=good?s.ble:null,u=good?s.usb:null;
-    details('radio-details',[['Transport',good&&s.attempted&128?(s.init[9]?'Initialization failed':'Initialized; peer unverified'):'Not tested'],['UART received',r?r.rx+' bytes':'—'],['Mode',r?(r.command?'Command':'Transparent'):'—'],['Last received bytes',r?.last_hex||'—'],['RSSI / SNR','Not exposed'],['RF delivery','Requires a peer acknowledgement']]);
+    window.AtlasRadio?.render(v,good);
     details('ble-details',[['Model',b?.model||'—'],['Firmware',b?.firmware||'—'],['Mode',b?(b.command?'Command':'Data'):'—'],['RX / TX',b?b.rx+' / '+b.tx+' bytes':'—'],['DTR / timeouts',b?b.dtr+' / '+b.timeouts:'—'],['Last received bytes',b?.last_hex||'—']]);
     details('usb-details',[['Device',v.port|| (demoMode?'SIMULATED':'—')],['Session',u?.session],['RX / completed TX',u?u.rx+' / '+u.tx+' bytes':'—'],['RX / TX drops',u?u.rx_drop+' / '+u.tx_drop:'—'],['Timeouts',u?.timeouts],['Rejected telemetry',v.decoder_errors]]);
   }
@@ -191,7 +193,9 @@ async function polling(){try{await pollOnce();}catch(error){networkFailed=true;i
 async function ports(){try{const list=await api('ports');$('port-select').innerHTML='<option value="">Select the Atlas port</option>'+list.map(p=>`<option value="${esc(p.device)}">${esc(p.device+' · '+p.description)}</option>`).join('');}catch(error){toast(error.message);}}
 async function command(verb){
   let copy='';
-  if(verb.startsWith('radio '))copy='This communicates with the RFD900x modem. Confirm the correct radio, antenna, power and regional configuration are ready. Sending test text can transmit RF; it does not prove receipt.';
+  if(verb==='radio connect')copy='Start a two-way test, then check the peer every three seconds. The result requires a reply from another Atlas running firmware 1.4.0 or later. Monitoring continues without USB until stopped or Atlas restarts.';
+  else if(verb==='radio ping')copy='Send one numbered radio test. Atlas will report the responding board and round-trip time, or report no reply after two seconds.';
+  else if(verb==='radio id')copy='Read the local modem identity. Pause telemetry and stop monitoring on both boards first so the modem can enter its guarded command mode.';
   else if(verb==='sd test')copy='Create ATLASCHK.TST on the inserted expendable FAT card, write the test pattern and compare it. Existing files are preserved. Do not remove power or the card during the operation.';
   else if(verb.startsWith('ble '))copy='Apply this explicit BLE operation. The SPS profile is volatile. A ping sends fixed test text; verify receipt on your paired client.';
   else if(verb.startsWith('gpio ')&&verb!=='gpio 0')copy='Drive this logic GPIO high for one second. Confirm only the intended inert loopback or measurement fixture is attached.';
@@ -201,7 +205,7 @@ async function command(verb){
   else if(verb==='birthday')copy=`Play Happy Birthday once (${number((state.hello.birthday_ms??12000)/1000,2)} seconds). Stop indicators cancels playback. Keep motors, servos and pyro loads disconnected.`;
   else if(verb.startsWith('utc '))copy='Set the board RTC to this laptop’s current UTC. This changes timestamps used by storage operations.';
   if(copy&&!await confirmAction(verb,copy))return;
-  await act('command',{verb,action_confirmed:!!copy||verb==='gpio 0'});
+  await act('command',{verb,action_confirmed:!!copy||verb==='gpio 0'||verb==='radio disconnect'||['telemetry on','telemetry off'].includes(verb)});
 }
 document.addEventListener('click',event=>{
   const nav=event.target.closest('[data-view]');if(nav){showView(nav.dataset.view);return;}

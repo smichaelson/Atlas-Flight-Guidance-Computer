@@ -67,6 +67,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/atlas_ms5611.c
     App/Src/atlas_pyro_policy.c
     App/Src/atlas_rfd900x.c
+    App/Src/atlas_radio_link.c
+    App/Src/atlas_telemetry.c
+    App/Src/atlas_telemetry_boot.c
     App/Src/atlas_rtos.c
     App/Src/atlas_rtos_policy.c
     App/Src/atlas_spi_device.c

@@ -157,12 +157,17 @@ class Station:
                 try:
                     data = self.serial.read(min(self.serial.in_waiting, 32768))
                     previous_errors = self.decoder.errors
+                    previous_remote_errors=self.decoder.remote_errors
                     for frame in self.decoder.feed(data):
                         self.ingest(frame, now)
                     if self.decoder.errors != previous_errors:
                         self.session.blocked = "Invalid telemetry received. See the session log, then disconnect and reconnect."
                         self.event(self.decoder.last_error, "error")
                         self.batch.clear()
+                    if self.decoder.remote_errors!=previous_remote_errors:
+                        self.session.remote=None
+                        self.session.remote_received_at=float('-inf')
+                        self.event('Remote snapshot rejected: '+self.decoder.last_remote_error,'error')
                     if self.handshake_deadline:
                         if self.session.blocked or (self.session.hello and self.session.fresh(now)):
                             self.handshake_deadline = 0.0
@@ -192,6 +197,9 @@ class Station:
             return dict(mode=self.mode, port=self.port, generation=self.generation, servo_control_epoch=self.servo_control_epoch,
                         fresh=fresh, age_ms=round(age*1000) if math.isfinite(age) else None,
                         hello=self.session.hello, status=self.session.status,
+                        remote=self.session.remote,
+                        remote_age_ms=round((now-self.session.remote_received_at)*1000) if self.session.remote else None,
+                        remote_decoder_errors=self.decoder.remote_errors,
                         rows=observations(self.session.status) if self.session.status and not compact else [],
                         history=[] if compact else list(self.history), events=[] if compact else list(self.events),
                         blocked=self.session.blocked, pending=self.session.pending.verb if self.session.pending else None,
@@ -441,7 +449,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/":
             self.reply((WEB / "index.html").read_text(encoding="utf-8").replace("__ATLAS_TOKEN__", self.server.token).replace('__ATLAS_ROOT_ID__', ROOT_ID), content_type="text/html; charset=utf-8")
-        elif self.path in ("/app.js", "/servo_motion.js", "/servos.js", "/stabilization.js", "/style.css"):
+        elif self.path in ("/app.js", "/radio.js", "/remote.js", "/servo_motion.js", "/servos.js", "/stabilization.js", "/style.css"):
             kind = "text/javascript" if self.path.endswith(".js") else "text/css"
             self.reply((WEB / self.path[1:]).read_bytes(), content_type=kind + "; charset=utf-8")
         elif self.path == "/api/state":

@@ -34,12 +34,12 @@ The driver target-builds without warnings. Deterministic host tests cover substa
 | Item | Atlas value |
 |---|---|
 | Connection | J9 external radio header |
-| Host UART | USART3, current generated default 115200 baud, 8N1, no hardware flow control |
+| Host UART | USART3, 57600 baud, 8N1, no hardware flow control (firmware 1.4.0+) |
 | Logic | 3.3 V UART |
 | Power | Direct `5V_SYS` on the header; not behind the small accessory-port current limiters |
 | Receive path | Receive-to-idle interrupt into a 1,024-byte ring (1,023 usable slots) |
 | Normal boot | Transparent transport only; modem presence is not proven |
-| SiK factory serial default | Commonly 57600 baud, 8N1; this conflicts with the current host default until the installed modem is configured or the host is deliberately changed |
+| SiK factory serial default | 57600 baud, 8N1; matches the host. A previously customized modem still requires explicit commissioning |
 
 RFDesign specifies high peak current at maximum transmit power. Verify supply, cable drop, grounding, antenna, heat sinking, and regional modem variant before attaching or transmitting.
 
@@ -47,7 +47,20 @@ RFDesign specifies high peak current at maximum transmit power. Verify supply, c
 
 The driver carries bytes, not messages. `AtlasRfd900x_Write()` returning `ATLAS_OK` proves only that the local UART accepted the bytes. It does not prove RF synchronization, remote receipt, packet integrity, ordering across resets, or application acknowledgement.
 
-Define a protocol above the driver with at least:
+Bringup and ServoBench 1.4.0 add the separate [bench radio link protocol](../../RADIO_LINK.md).
+They start passive reception on boot and respond only to valid Atlas diagnostic PINGs.
+The dashboard reports a connection after a matching, addressed ACK, and displays the
+peer UID, test result, round-trip time, timeouts and UART errors. This protocol never
+interprets radio data as USB console, PWM, stabilization or pyro commands. Normal
+application firmware retains the byte-transport API; it does not run this bench protocol.
+
+Bringup and ServoBench 1.5.0 also broadcast [remote sensor snapshots](../../REMOTE_TELEMETRY.md)
+automatically. Fixed-size packets carry sequence, UID/boot identity and CRC, with two
+repair shards per batch and a second whole-snapshot CRC. The dedicated **Remote Atlas**
+tab displays separate peer measurements and delivery statistics. Pause broadcasts and
+stop monitoring on both boards before attempting guarded local AT diagnostics.
+
+Applications using the normal byte-transport API still need a protocol with at least:
 
 - sync/version/type/length;
 - sequence number and monotonic timestamp;
@@ -102,7 +115,7 @@ For serial speed, change the modem's S1 while at the old baud, verify and persis
 | `malformed_responses` | `ATI` or `ATI5` returned no substantive line after optional command echo. |
 | `configuration_mismatches` | `ATSn?` did not parse or equal the requested value. |
 
-Also inspect the UART ring drop and recovery counters; a dropped payload byte must be detected by the future application framing layer.
+Also inspect the UART ring drop and recovery counters; application CRC and sequence checks detect damaged or missing packets.
 
 ## Bench acceptance
 

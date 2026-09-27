@@ -1,6 +1,8 @@
 # Atlas documentation
 
 - [Four-servo bench stabilization](STABILIZATION.md) and [three-pass review](STABILIZATION_REVIEW.md).
+- [Acknowledged RFD900x bench connection](RADIO_LINK.md) and [three-pass review](RADIO_LINK_REVIEW.md).
+- [Remote Atlas sensor telemetry](REMOTE_TELEMETRY.md) and [three-pass review](REMOTE_TELEMETRY_REVIEW.md).
 
 ## Choose the question, not a reading list
 

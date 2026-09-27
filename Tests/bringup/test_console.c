@@ -49,6 +49,8 @@ static unsigned dfu_stops;
 static unsigned tone_requests;
 static uint32_t tone_duration;
 static AtlasStatus tone_result = ATLAS_OK;
+bool AtlasBle_IsDtrAsserted(const AtlasBle *ble) { (void)ble; return false; }
+uint8_t AtlasLed_ReadGateMask(const AtlasLed *led) { (void)led; return 0U; }
 AtlasStatus AtlasBuzzer_Beep(AtlasBuzzer *buzzer, uint32_t hz, uint32_t ms)
 {
     assert(hz >= ATLAS_BUZZER_MIN_FREQUENCY_HZ && hz <= ATLAS_BUZZER_MAX_FREQUENCY_HZ);
@@ -300,6 +302,54 @@ static void test_birthday(void)
 
 /** @brief Check dispatch, queue reservation and both ordinary/worst-case JSON.
  * @return Zero after assertions; stdout contains only valid target JSON lines. */
+/** @brief Exercise actual asynchronous RF-to-USB completion, backpressure and epoch fencing. */
+static void test_radio_completion(void)
+{
+    static AtlasBoard board;
+    static UART_HandleTypeDef uart;
+    uart.Init.BaudRate=57600U; board.hardware.radio_uart=&uart; bench_board=&board;
+    board.led.output_inhibited=true;
+    BenchReply discard;
+    while(xQueueReceive(result_queue,&discard,0U)==pdTRUE) { }
+    BenchWork work;
+    while(xQueueReceive(work_queue,&work,0U)==pdTRUE) { }
+    pending=BENCH_PENDING_NONE; reply_count=0U; watchdog_fault=0U; dfu_pending=false;
+    test_io.stabilization.enabled=true;
+    const unsigned storage_before=submitted_storage;
+    AtlasBenchCommand command;
+    assert(AtlasBench_Parse("201 radio connect",&command)); bench_dispatch(&command);
+    assert(pending==BENCH_PENDING_WORK && xQueueReceive(work_queue,&work,0U)==pdTRUE);
+    assert(work.command.operation==ATLAS_BENCH_RADIO_CONNECT && submitted_storage==storage_before);
+    radio_reply=(BenchReply){.id=command.id,.epoch=link_epoch}; radio_reply_pending=true;
+    radio_link.state.test=ATLAS_RADIO_TEST_WAITING;
+    bench_radio_complete(); assert(radio_reply_pending && uxQueueSpacesAvailable(result_queue)==2U);
+    radio_link.state.test=ATLAS_RADIO_TEST_TIMEOUT;
+    bench_radio_complete(); assert(!radio_reply_pending && published.radio_link.test==ATLAS_RADIO_TEST_TIMEOUT);
+    bench_results(); assert(pending==BENCH_PENDING_NONE);
+    assert(reply_ring[reply_head].status==ATLAS_ERROR_TIMEOUT && strstr(reply_ring[reply_head].detail,"2000 ms"));
+    reply_count=0U;
+    assert(AtlasBench_Parse("202 radio ping",&command)); bench_dispatch(&command);
+    assert(pending==BENCH_PENDING_WORK && xQueueReceive(work_queue,&work,0U)==pdTRUE);
+    radio_reply=(BenchReply){.id=command.id,.epoch=link_epoch}; radio_reply_pending=true;
+    radio_link.state.test=ATLAS_RADIO_TEST_ACK; radio_link.state.test_sequence=17U;
+    radio_link.state.test_rtt_ms=123U; radio_link.state.test_peer[0]=3342386U;
+    radio_link.state.test_peer[1]=859001093U; radio_link.state.test_peer[2]=943273521U;
+    bench_radio_complete(); bench_results();
+    assert(reply_ring[reply_head].status==ATLAS_OK && strstr(reply_ring[reply_head].detail,"123 ms") &&
+           strstr(reply_ring[reply_head].detail,"3342386-859001093-943273521"));
+    reply_count=0U;
+    /* The radio completion is retained if the result queue is full. */
+    assert(xQueueSend(result_queue,&radio_reply,0U)==pdTRUE);
+    assert(xQueueSend(result_queue,&radio_reply,0U)==pdTRUE);
+    radio_reply_pending=true; bench_radio_complete(); assert(radio_reply_pending);
+    while(xQueueReceive(result_queue,&discard,0U)==pdTRUE) { }
+    ++link_epoch; /* A disconnected laptop must not receive an old success. */
+    bench_radio_complete(); bench_results(); assert(!radio_reply_pending && reply_count==0U);
+    assert(AtlasBench_Parse("203 radio id",&command)); bench_dispatch(&command);
+    assert(reply_ring[reply_head].status==ATLAS_ERROR_BUSY); /* AT still blocked by stabilization. */
+    test_io.stabilization.enabled=false;
+}
+
 int main(void)
 {
     TestRuntimeReset();
@@ -462,5 +512,27 @@ int main(void)
 #else
     assert(pending==BENCH_PENDING_NONE && reply_ring[reply_head].status==ATLAS_ERROR_UNSUPPORTED);
 #endif
+    test_radio_completion();
+    /* Exercise the actual snapshot builder and remote JSON formatter, including signed
+       values and the validity bits used by the laptop. No remote data enters IO. */
+    static AtlasBoard remote_board;
+    bench_board=&remote_board;memset(&working,0,sizeof(working));memset(&test_io,0,sizeof(test_io));
+    const uint32_t tm_uid[3]={1,2,3},tm_boot[2]={10,20};
+    AtlasTelemetry_Init(&telemetry,tm_uid,tm_boot,0U);test_tick=2000U;
+    sensors_started=true;io_start=ATLAS_OK;
+    working.sensors.lsm6dsv16b.accel_x_g=-1.25f;
+    working.sensors.lsm6dsv16b.accel_y_g=NAN;
+    test_io.analog.millivolts[3]=8050U;test_io.analog.valid_mask=1023U;
+    test_io.analog.raw[0]=65535U;test_io.analog.raw[1]=12345U;
+    bench_telemetry_begin();
+    memcpy(telemetry.view.data,telemetry.tx,ATLAS_TM_BYTES);
+    memcpy(telemetry.view.peer,(uint32_t[]){4,5,6},12U);memcpy(telemetry.view.boot,tm_boot,8U);
+    telemetry.view.available=1U;telemetry.view.stats.good_batches=1U;
+    telemetry.view.received_ms=2000U;telemetry.view.sequence=1U;
+    working.remote=telemetry.view;working.published_ms=2000U;published=working;
+    bench_remote_status();assert(tx_length<3000U&&strstr(tx,"serialization_overflow")==NULL);fputs(tx,stdout);
+    assert(AtlasBench_Parse("120 telemetry off",&command)&&command.operation==ATLAS_BENCH_TELEMETRY&&command.argument[0]==0U);
+    assert(AtlasBench_Parse("121 telemetry on",&command)&&command.argument[0]==1U);
+    assert(!AtlasBench_Parse("122 telemetry on gpio 1",&command));
     return 0;
 }

@@ -55,7 +55,7 @@ typedef struct
  * @param transport Destination UART transport object.
  * @param uart Initialized USART3 at the radio's currently configured serial baud.
  * @return ATLAS_OK or a typed transport failure.
- * @note RFD factory serial speed is commonly 57600; this board currently initializes 115200.
+ * @note USART3 uses the RFD900x factory serial speed: 57600 baud, 8N1.
  */
 AtlasStatus AtlasRfd900x_Init(AtlasRfd900x *radio,
                               AtlasUartTransport *transport,
