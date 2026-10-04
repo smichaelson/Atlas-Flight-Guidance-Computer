@@ -6,7 +6,9 @@ Atlas is a collaborative STM32H743 flight-computer development project for the R
 
 ## Start here
 
-**New dashboard and USB updates:** see the [Ground Station guide](docs/GROUND_STATION.md). Use **Start Atlas Dashboard.cmd**, **Atlas Dashboard Demo.cmd**, and **Build Atlas Firmware.cmd** in this folder. A fresh Windows clone bootstraps its own Python environment offline after Python 3.10+ is installed. Software DFU entry works after one initial installation. **Build Atlas ServoBench.cmd** builds the separate [manual servo profile](docs/SERVO_BENCH.md). The [three-pass review](docs/GROUND_STATION_REVIEW.md) records the tested scope and physical checks still pending.
+**Dashboard:** double-click **Start Atlas Dashboard.cmd** on Windows or [**Start Atlas Dashboard.command**](Start%20Atlas%20Dashboard.command) on macOS (Intel or Apple silicon). Install Python 3.10+ first; the launcher prepares its own environment and installs the bundled dashboard dependency offline. See the [Ground Station guide](docs/GROUND_STATION.md#start-the-dashboard) for setup, demo mode and Mac troubleshooting.
+
+**USB updates and firmware builds:** see the [Ground Station guide](docs/GROUND_STATION.md). **Atlas Dashboard Demo.cmd**, **Build Atlas Firmware.cmd**, and **Build Atlas ServoBench.cmd** remain the Windows shortcuts. The latter builds the separate [manual servo profile](docs/SERVO_BENCH.md). Software DFU entry works after one initial installation. Firmware building/programming needs separate ST tools; they are not installed by the dashboard launcher. The [three-pass review](docs/GROUND_STATION_REVIEW.md) records the tested scope and physical checks still pending.
 
 **PCB on the bench? Start with [startup](docs/startup.md)** — the complete power/BOOT0/reset/USB-programming procedure, local dashboard and staged tests. Build the **Bringup** preset, not the normal Debug/Release application. Check the documented USB schematic/manufacturing polarity conflict against the actual board before USB use.
 

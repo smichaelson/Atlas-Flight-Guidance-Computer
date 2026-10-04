@@ -1,0 +1,61 @@
+name: Dashboard launchers
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Start Atlas Dashboard.*'
+      - 'Atlas Dashboard Demo.cmd'
+      - 'tools/bringup/**'
+      - 'Tests/bringup/test_launcher.py'
+      - 'Tests/bringup/test_portability.py'
+      - '.gitattributes'
+      - '.github/workflows/dashboard-launchers.yml'
+  pull_request:
+    paths:
+      - 'Start Atlas Dashboard.*'
+      - 'Atlas Dashboard Demo.cmd'
+      - 'tools/bringup/**'
+      - 'Tests/bringup/test_launcher.py'
+      - 'Tests/bringup/test_portability.py'
+      - '.gitattributes'
+      - '.github/workflows/dashboard-launchers.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            python: '3.14'
+          - os: macos-15-intel
+            python: '3.12'
+          - os: windows-latest
+            python: '3.10'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Offline dependency setup and real local dashboard startup
+        run: python -B Tests/bringup/test_launcher.py
+      - name: Existing Windows shortcuts
+        if: runner.os == 'Windows'
+        run: python -B Tests/bringup/test_portability.py
+        env:
+          PYTHONUTF8: '1'
+      - name: Finder launcher packaging
+        if: runner.os == 'macOS'
+        shell: /bin/bash {0}
+        run: |
+          test -x 'Start Atlas Dashboard.command'
+          /bin/bash -n 'Start Atlas Dashboard.command'
+          ATLAS_PYTHON="$(command -v python3)" ./Start\ Atlas\ Dashboard.command --check

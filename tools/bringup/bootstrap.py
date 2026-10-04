@@ -56,6 +56,13 @@ def environment() -> Path:
         wheel = Path(__file__).parent / 'vendor' / WHEEL_NAME
         if not wheel.is_file() or hashlib.sha256(wheel.read_bytes()).hexdigest() != WHEEL_SHA256:
             raise RuntimeError('Bundled pyserial wheel is missing or changed. Restore tools/bringup/vendor from the repository.')
+        # A copied/partially prepared environment can run Python but lack pip.
+        # ensurepip uses Python's own bundled wheel; it never downloads packages.
+        pip_ready = subprocess.run([str(python), '-I', '-m', 'pip', '--version'], cwd=ROOT,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=15).returncode == 0
+        if not pip_ready:
+            subprocess.run([str(python), '-I', '-m', 'ensurepip', '--upgrade'], cwd=ROOT, check=True)
         subprocess.run([str(python), '-I', '-m', 'pip', '--isolated', 'install', '--no-index',
                         '--no-deps', '--disable-pip-version-check', str(wheel)], cwd=ROOT, check=True)
         if not probe(python, dependencies=True):
@@ -67,7 +74,9 @@ def environment() -> Path:
 def main():
     os.environ['PYTHONUTF8']='1'
     if sys.version_info < (3, 10):
-        raise RuntimeError('Install Python 3.10 or newer from https://www.python.org/downloads/windows/ and run the launcher again.')
+        platform = 'macos/' if sys.platform == 'darwin' else 'windows/' if os.name == 'nt' else ''
+        raise RuntimeError('Install Python 3.10 or newer from https://www.python.org/downloads/'
+                           + platform + ' and run the launcher again.')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('dashboard', 'demo', 'build', 'servo-build', 'setup'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)

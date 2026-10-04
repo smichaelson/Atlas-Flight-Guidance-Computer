@@ -3,6 +3,8 @@ import argparse
 import hashlib
 import re
 from pathlib import Path
+import os
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -15,16 +17,18 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo",action="store_true")
     parser.add_argument("--port",type=int,default=8765)
+    parser.add_argument("--no-browser",action="store_true",help="Start the dashboard without opening a browser")
     parser.add_argument("--check",action="store_true",help="Print the launch command without opening a browser or server")
     args=parser.parse_args()
     if not 1024<=args.port<=65535: parser.error("Choose a port from 1024 to 65535")
     manifest=ROOT/"build/BenchMake/Atlas-Bringup.manifest.json"
     if not manifest.exists(): manifest=ROOT/"build/Bringup/Atlas-Bringup.manifest.json"
-    command=[sys.executable,"-B",str(ROOT/"tools/bringup/ground_station.py"),"--open",
-             "--port",str(args.port),"--manifest",str(manifest)]
+    command=[sys.executable,"-B",str(ROOT/"tools/bringup/ground_station.py")]
+    if not args.no_browser: command.append("--open")
+    command.extend(["--port",str(args.port),"--manifest",str(manifest)])
     if args.demo: command.append("--demo")
     if args.check:
-        print(subprocess.list2cmdline(command))
+        print(subprocess.list2cmdline(command) if os.name == 'nt' else shlex.join(command))
         return
     url=f"http://127.0.0.1:{args.port}/"
     try:
@@ -38,9 +42,9 @@ def main():
         match=re.search(rb'name="atlas-root-id" content="([a-f0-9]+)"',page)
         if not match or match.group(1).decode()!=root_id:
             raise SystemExit('A different or older Atlas server is using this port. Close its launcher, '
-                             'or run Start Atlas Dashboard.cmd --port 8766 from this clone.')
-        print("Atlas is already running. Opening its current session; use Explore demo if needed.")
-        webbrowser.open(url)
+                             'or run this clone\'s dashboard launcher with --port 8766.')
+        print("Atlas is already running at " + url + "; use Explore demo if needed.")
+        if not args.no_browser: webbrowser.open(url)
         return
     raise SystemExit(subprocess.call(command,cwd=ROOT))
 
